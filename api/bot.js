@@ -1,5 +1,3 @@
-perbarui dikode ini! 
-
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
