@@ -12,7 +12,7 @@
 
 - 🎵 **Download Audio** — Konversi YouTube ke MP3 dengan kualitas terbaik
 - 🎬 **Download Video** — Simpan video YouTube dalam format MP4
-- ⚡ **Proses Cepat** — Tanpa antrian, konversi 15-45 detik
+- ⚡ **Proses Cepat** — Tanpa antrian, konversi 00-05 detik
 - 🔗 **Link Langsung** — File siap download tanpa redirect
 - 🆓 **100% Gratis** — Tanpa batasan durasi atau watermark
 - 📱 **YouTube Shorts Support** — Download Shorts dengan mudah
@@ -22,7 +22,7 @@
 ## 🚀 Cara Penggunaan
 
 1. **Mulai Bot**  
-   Cari `@YourBotUsername` di Telegram atau klik [di sini](https://t.me/YourBotUsername)
+   Cari `@yetemp3down_bot` di Telegram atau klik [di sini](https://t.me/yetemp3down_bot)
 
 2. **Kirim Link YouTube**  
    Paste link video YouTube yang ingin didownload
@@ -130,7 +130,7 @@ https://m.youtube.com/watch?v=xxxxx
 
 | Role | Nama | Kontak |
 |------|------|--------|
-| 👨‍💻 Owner | Abiq Nurmagedov | [GitHub](https://github.com/abiqnurmagedov17) • [Telegram](https://t.me/abiqnurmagedov) |
+| 👨‍💻 Owner | Abiq Nurmagedov | [GitHub](https://github.com/abiqnurmagedov17) • [Telegram](https://t.me/abiqqqqqq) |
 
 ---
 
@@ -162,7 +162,7 @@ Jika Anda ingin meningkatkan bot ini, silakan:
 
 Punya pertanyaan atau kendala? Hubungi melalui:
 
-- 💬 **Telegram**: [@abiqnurmagedov](https://t.me/abiqnurmagedov)
+- 💬 **Telegram**: [@abiqnurmagedov](https://t.me/abiqqqqqq)
 - 🐙 **GitHub Issues**: [Buka Issue Baru](https://github.com/abiqnurmagedov17/bot-tele-ytmp3/issues)
 
 ---
@@ -172,5 +172,5 @@ Punya pertanyaan atau kendala? Hubungi melalui:
 </p>
 
 <p align="center">
-  <sub>Dibuat dengan ❤️ oleh Abiq Nurmagedov</sub>
+  <sub>Dibuat oleh ❤️ Abiq Nurmagedov</sub>
 </p>
