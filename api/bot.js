@@ -88,7 +88,8 @@ async function ytmp3(url) {
     }
 
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-      return { downloadUrl: convert.data.downloadURL, title: null };
+      const title = await getVideoTitle(url);
+      return { downloadUrl: convert.data.downloadURL, title };
     }
 
     if (convert.data.progressURL) {
@@ -117,6 +118,7 @@ async function ytmp3(url) {
               return { downloadUrl: convert.data.downloadURL, title };
             }
           }
+          // Skip error lain saat polling, lanjutkan
         }
         
         await new Promise(r => setTimeout(r, CONFIG.POLL_INTERVAL));
@@ -130,24 +132,6 @@ async function ytmp3(url) {
   } catch (err) {
     log.error(`Conversion error: ${err.message}`);
     throw err;
-  }
-}
-
-async function downloadAudioFromUrl(downloadUrl) {
-  try {
-    const response = await axios.get(downloadUrl, {
-      responseType: 'arraybuffer',
-      timeout: 120000,
-      maxRedirects: 5,
-      headers: {
-        'User-Agent': getUA()
-      }
-    });
-    
-    return Buffer.from(response.data);
-  } catch (err) {
-    log.error(`Download error: ${err.message}`);
-    throw new Error('Gagal mengunduh file audio');
   }
 }
 
@@ -169,11 +153,11 @@ bot.start((ctx) => {
 
 Halo ${ctx.from.first_name || 'Kak'}!
 
-Kirimkan link YouTube untuk mengkonversi ke MP3.
+Kirimkan link YouTube, bot akan memberikan link download MP3.
 
 *Fitur:*
-• Download audio dari YouTube
-• Kualitas audio terbaik
+• Konversi YouTube ke MP3
+• Link download langsung
 • Tanpa batasan durasi
 • Gratis!
 
@@ -181,7 +165,7 @@ Kirimkan link YouTube untuk mengkonversi ke MP3.
 1. Copy link YouTube
 2. Kirim link ke bot ini
 3. Tunggu proses konversi
-4. Download file MP3
+4. Dapatkan link download MP3
 
 Kirim link YouTube sekarang! 🚀
   `;
@@ -193,8 +177,8 @@ Kirim link YouTube sekarang! 🚀
 bot.help((ctx) => {
   ctx.reply(
     '📖 *Bantuan*\n\n' +
-    'Kirimkan link YouTube untuk download MP3.\n\n' +
-    '*Contoh:*\n' +
+    'Kirimkan link YouTube untuk mendapatkan link download MP3.\n\n' +
+    '*Contoh link:*\n' +
     '• https://youtube.com/watch?v=xxxxx\n' +
     '• https://youtu.be/xxxxx\n' +
     '• https://youtube.com/shorts/xxxxx\n\n' +
@@ -260,7 +244,7 @@ bot.on('text', async (ctx) => {
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      '🔄 Mengkonversi video ke MP3...\n\nIni mungkin memakan waktu beberapa saat.'
+      '🔄 Mengkonversi video ke MP3...\n\n⏳ Ini mungkin memakan waktu 10-30 detik.'
     );
     
     const result = await ytmp3(url);
@@ -269,58 +253,28 @@ bot.on('text', async (ctx) => {
       throw new Error('Gagal mendapatkan link download');
     }
     
-    // Update progress - download audio
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      loadingMsg.message_id,
-      null,
-      '📥 Mengunduh file audio...'
-    );
+    // Hapus pesan loading
+    await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
     
-    // Download audio buffer
-    const audioBuffer = await downloadAudioFromUrl(result.downloadUrl);
+    // Kirim link download
+    const title = result.title || 'Audio';
+    const filename = sanitizeFilename(title) + '.mp3';
     
-    // Siapkan nama file
-    const filename = sanitizeFilename(result.title || `audio_${Date.now()}`) + '.mp3';
+    const successMessage = 
+      `✅ *Konversi Berhasil!*\n\n` +
+      `🎵 *Judul:* ${title}\n` +
+      `📁 *File:* ${filename}\n\n` +
+      `🔗 *Link Download:*\n` +
+      `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
+      `⚠️ *Penting:*\n` +
+      `• Link berlaku ~1 jam\n` +
+      `• Jika link expired, kirim ulang link YouTube\n` +
+      `• Gunakan browser atau download manager`;
     
-    // Update progress - upload
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      loadingMsg.message_id,
-      null,
-      '📤 Mengirim file ke Telegram...'
-    );
-    
-    // Cek ukuran file (Telegram limit 50MB untuk bot)
-    const fileSizeMB = audioBuffer.length / (1024 * 1024);
-    
-    if (fileSizeMB > 50) {
-      // File terlalu besar, kirim link download saja
-      await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-      
-      ctx.reply(
-        `⚠️ *File terlalu besar*\n\n` +
-        `Ukuran: ${fileSizeMB.toFixed(1)} MB\n` +
-        `Batas maksimal: 50 MB\n\n` +
-        `🔗 *Link Download:*\n` +
-        `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
-        `_Link berlaku sementara, segera download_`,
-        { parse_mode: 'Markdown', disable_web_page_preview: true }
-      );
-    } else {
-      // Kirim file audio
-      await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-      
-      await ctx.replyWithAudio(
-        { source: audioBuffer, filename: filename },
-        {
-          title: result.title || 'YouTube Audio',
-          performer: 'YouTube to MP3 Bot',
-          caption: `✅ *Download Selesai!*\n\n🎵 ${result.title || 'Audio'}\n📦 Ukuran: ${fileSizeMB.toFixed(1)} MB`,
-          parse_mode: 'Markdown'
-        }
-      );
-    }
+    await ctx.reply(successMessage, { 
+      parse_mode: 'Markdown', 
+      disable_web_page_preview: false 
+    });
     
     // Clear state
     userStates.delete(userId);
@@ -331,7 +285,7 @@ bot.on('text', async (ctx) => {
     
     log.error(`Error for user ${userId}: ${err.message}`);
     
-    let errorMessage = '❌ Gagal memproses link.\n\n';
+    let errorMessage = '❌ *Gagal memproses link*\n\n';
     
     if (err.message.includes('URL YouTube tidak valid')) {
       errorMessage += 'Link YouTube tidak valid.';
@@ -339,11 +293,13 @@ bot.on('text', async (ctx) => {
       errorMessage += 'Proses konversi terlalu lama. Silakan coba lagi.';
     } else if (err.message.includes('Video tidak ditemukan')) {
       errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
+    } else if (err.message.includes('410') || err.message.includes('expired')) {
+      errorMessage += 'Link download expired. Silakan kirim ulang link YouTube untuk konversi baru.';
     } else {
-      errorMessage += `Error: ${err.message}\n\nSilakan coba lagi nanti.`;
+      errorMessage += `*Error:* ${err.message}\n\nSilakan coba lagi nanti atau coba video lain.`;
     }
     
-    ctx.reply(errorMessage);
+    await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
   }
 });
 
