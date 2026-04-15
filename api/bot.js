@@ -1,4 +1,4 @@
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
@@ -11,7 +11,8 @@ const CONFIG = {
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36'
   ]
 };
 
@@ -51,151 +52,9 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Fungsi utama konversi dengan retry mechanism (MP3)
-async function ytmp3(url, retryCount = 0) {
-  log.debug(`Processing URL (MP3): ${url} (Attempt ${retryCount + 1}/3)`);
-  
-  try {
-    const match = url.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
-    if (!match) throw new Error('URL YouTube tidak valid');
-    const videoId = match[1];
-
-    // Buat session baru setiap kali - PENTING!
-    const jar = new tough.CookieJar();
-    
-    // Headers yang lebih lengkap seperti browser asli
-    const headers = {
-      'User-Agent': getUA(),
-      'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-      'Referer': 'https://ytmp3.mobi/',
-      'Origin': 'https://ytmp3.mobi',
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-site',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
-    };
-
-    const client = wrapper(axios.create({
-      jar,
-      timeout: CONFIG.TIMEOUT,
-      maxRedirects: 5,
-      headers
-    }));
-
-    // Step 1: Init session
-    log.debug('Step 1: Initializing session...');
-    const initUrl = 'https://a.ymcdn.org/api/v1/init';
-    const init = await client.get(initUrl, {
-      params: { 
-        p: 'y', 
-        '23': '1llum1n471', 
-        _: Date.now() 
-      }
-    });
-    
-    if (init.data.error) throw new Error(init.data.error);
-    if (!init.data.convertURL) throw new Error('Gagal inisialisasi - no convertURL');
-    
-    log.debug('Session initialized successfully');
-    
-    // Delay kecil sebelum request berikutnya
-    await delay(500);
-
-    // Step 2: Convert request
-    log.debug('Step 2: Sending convert request...');
-    const convert = await client.get(init.data.convertURL, {
-      params: { 
-        v: videoId, 
-        f: 'mp3', 
-        _: Date.now() 
-      }
-    });
-    
-    log.debug(`Convert response: ${JSON.stringify(convert.data)}`);
-    
-    if (convert.data.error && convert.data.error !== 'in_progress') {
-      throw new Error(convert.data.error);
-    }
-
-    // Cek apakah langsung dapat download URL
-    if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-      log.debug('Got direct download URL');
-      const title = await getVideoTitle(url);
-      return { downloadUrl: convert.data.downloadURL, title };
-    }
-
-    // Step 3: Polling progress
-    if (convert.data.progressURL) {
-      log.debug('Step 3: Starting polling...');
-      let polls = 0;
-      
-      while (polls < CONFIG.MAX_POLLS) {
-        polls++;
-        
-        try {
-          const prog = await client.get(convert.data.progressURL, {
-            headers: {
-              'Referer': 'https://ytmp3.mobi/',
-              'Origin': 'https://ytmp3.mobi'
-            }
-          });
-          
-          const progressData = prog.data;
-          log.debug(`Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
-          
-          if (progressData.downloadURL && progressData.downloadURL !== '#') {
-            const title = await getVideoTitle(url);
-            return { downloadUrl: progressData.downloadURL, title };
-          }
-          
-          if (progressData.error && progressData.error !== 'in_progress') {
-            throw new Error(progressData.error);
-          }
-          
-        } catch (err) {
-          log.debug(`Poll error: ${err.message}`);
-          
-          // Jika 404, mungkin URL sudah expired, coba ambil dari data awal
-          if (err.response?.status === 404) {
-            if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-              const title = await getVideoTitle(url);
-              return { downloadUrl: convert.data.downloadURL, title };
-            }
-          }
-          
-          // Error lain saat polling, lanjutkan tapi dengan delay lebih lama
-          await delay(1000);
-        }
-        
-        await delay(CONFIG.POLL_INTERVAL);
-      }
-      
-      throw new Error('Timeout - konversi terlalu lama');
-    }
-    
-    throw new Error('Gagal mendapatkan link download');
-
-  } catch (err) {
-    log.error(`Conversion error (MP3): ${err.message}`);
-    
-    // Retry mechanism
-    if (retryCount < 2) {
-      log.info(`Retrying MP3 conversion... (${retryCount + 2}/3)`);
-      await delay(2000);
-      return ytmp3(url, retryCount + 1);
-    }
-    
-    throw err;
-  }
-}
-
-// Fungsi utama konversi MP4 dengan retry mechanism
-async function ytmp4(url, retryCount = 0) {
-  log.debug(`Processing URL (MP4): ${url} (Attempt ${retryCount + 1}/3)`);
+// Fungsi utama konversi dengan retry mechanism (MP3 & MP4)
+async function ytmp(url, format = 'mp3', retryCount = 0) {
+  log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/3`);
   
   try {
     const match = url.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
@@ -229,7 +88,7 @@ async function ytmp4(url, retryCount = 0) {
     }));
 
     // Step 1: Init session
-    log.debug('Step 1: Initializing session for MP4...');
+    log.debug('Step 1: Initializing session...');
     const initUrl = 'https://a.ymcdn.org/api/v1/init';
     const init = await client.get(initUrl, {
       params: { 
@@ -242,22 +101,22 @@ async function ytmp4(url, retryCount = 0) {
     if (init.data.error) throw new Error(init.data.error);
     if (!init.data.convertURL) throw new Error('Gagal inisialisasi - no convertURL');
     
-    log.debug('Session initialized successfully for MP4');
+    log.debug('Session initialized successfully');
     
     // Delay kecil sebelum request berikutnya
     await delay(500);
 
-    // Step 2: Convert request for MP4
-    log.debug('Step 2: Sending convert request for MP4...');
+    // Step 2: Convert request dengan format
+    log.debug(`Step 2: Sending convert request (${format})...`);
     const convert = await client.get(init.data.convertURL, {
       params: { 
         v: videoId, 
-        f: 'mp4', 
+        f: format, 
         _: Date.now() 
       }
     });
     
-    log.debug(`Convert response (MP4): ${JSON.stringify(convert.data)}`);
+    log.debug(`Convert response: ${JSON.stringify(convert.data)}`);
     
     if (convert.data.error && convert.data.error !== 'in_progress') {
       throw new Error(convert.data.error);
@@ -265,14 +124,14 @@ async function ytmp4(url, retryCount = 0) {
 
     // Cek apakah langsung dapat download URL
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-      log.debug('Got direct download URL for MP4');
+      log.debug('Got direct download URL');
       const title = await getVideoTitle(url);
-      return { downloadUrl: convert.data.downloadURL, title };
+      return { downloadUrl: convert.data.downloadURL, title, format };
     }
 
     // Step 3: Polling progress
     if (convert.data.progressURL) {
-      log.debug('Step 3: Starting polling for MP4...');
+      log.debug('Step 3: Starting polling...');
       let polls = 0;
       
       while (polls < CONFIG.MAX_POLLS) {
@@ -287,11 +146,11 @@ async function ytmp4(url, retryCount = 0) {
           });
           
           const progressData = prog.data;
-          log.debug(`Poll ${polls} (MP4): progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
+          log.debug(`Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
           
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
             const title = await getVideoTitle(url);
-            return { downloadUrl: progressData.downloadURL, title };
+            return { downloadUrl: progressData.downloadURL, title, format };
           }
           
           if (progressData.error && progressData.error !== 'in_progress') {
@@ -299,13 +158,13 @@ async function ytmp4(url, retryCount = 0) {
           }
           
         } catch (err) {
-          log.debug(`Poll error (MP4): ${err.message}`);
+          log.debug(`Poll error: ${err.message}`);
           
           // Jika 404, mungkin URL sudah expired, coba ambil dari data awal
           if (err.response?.status === 404) {
             if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
               const title = await getVideoTitle(url);
-              return { downloadUrl: convert.data.downloadURL, title };
+              return { downloadUrl: convert.data.downloadURL, title, format };
             }
           }
           
@@ -316,19 +175,19 @@ async function ytmp4(url, retryCount = 0) {
         await delay(CONFIG.POLL_INTERVAL);
       }
       
-      throw new Error('Timeout - konversi MP4 terlalu lama');
+      throw new Error('Timeout - konversi terlalu lama');
     }
     
-    throw new Error('Gagal mendapatkan link download MP4');
+    throw new Error('Gagal mendapatkan link download');
 
   } catch (err) {
-    log.error(`Conversion error (MP4): ${err.message}`);
+    log.error(`Conversion error: ${err.message}`);
     
     // Retry mechanism
     if (retryCount < 2) {
-      log.info(`Retrying MP4 conversion... (${retryCount + 2}/3)`);
+      log.info(`Retrying conversion... (${retryCount + 2}/3)`);
       await delay(2000);
-      return ytmp4(url, retryCount + 1);
+      return ytmp(url, format, retryCount + 1);
     }
     
     throw err;
@@ -349,25 +208,29 @@ bot.use(async (ctx, next) => {
 // Command /start
 bot.start((ctx) => {
   const welcomeMessage = `
-🎵 *YouTube to MP3/MP4 Bot* 🎵
+🎬 *YouTube Downloader Bot* 🎬
 
 Halo ${ctx.from.first_name || 'Kak'}!
 
-Kirimkan link YouTube, bot akan memberikan link download.
-
-*Fitur:*
-• Konversi YouTube ke MP3
-• Konversi YouTube ke MP4
-• Link download langsung
-• Tanpa batasan durasi
-• Gratis!
+Kirimkan link YouTube, lalu pilih format:
+• *MP3* - Audio only
+• *MP4* - Video with audio
 
 *Cara penggunaan:*
-1. Copy link YouTube
-2. Kirim link ke bot ini
-3. Pilih format yang diinginkan (MP3 atau MP4)
-4. Tunggu proses konversi
-5. Dapatkan link download
+1. Kirim link YouTube
+2. Pilih format MP3 atau MP4
+3. Tunggu proses konversi
+4. Dapatkan link download
+
+━━━━━━━━━━━━━━━━━━━━
+👤 *Owner Bot:* Abiq Nurmagedov
+📦 *GitHub:* github.com/abiqnurmagedov17
+
+⚠️ *Note:*
+Bot ini menggunakan API pihak ketiga 
+hasil scraping dan bisa mati sewaktu-waktu.
+Gunakan dengan bijak!
+━━━━━━━━━━━━━━━━━━━━
 
 Kirim link YouTube sekarang! 🚀
   `;
@@ -379,7 +242,10 @@ Kirim link YouTube sekarang! 🚀
 bot.help((ctx) => {
   ctx.reply(
     '📖 *Bantuan*\n\n' +
-    'Kirimkan link YouTube untuk mendapatkan link download.\n\n' +
+    'Kirimkan link YouTube, lalu pilih format.\n\n' +
+    '*Format:*\n' +
+    '• MP3 - Audio (musik, podcast)\n' +
+    '• MP4 - Video (tanpa watermark)\n\n' +
     '*Contoh link:*\n' +
     '• https://youtube.com/watch?v=xxxxx\n' +
     '• https://youtu.be/xxxxx\n' +
@@ -387,9 +253,7 @@ bot.help((ctx) => {
     '*Perintah:*\n' +
     '/start - Mulai bot\n' +
     '/help - Bantuan\n' +
-    '/status - Cek status proses\n' +
-    '/mp3 - Konversi ke MP3 (audio)\n' +
-    '/mp4 - Konversi ke MP4 (video)',
+    '/status - Cek status proses',
     { parse_mode: 'Markdown' }
   );
 });
@@ -400,20 +264,10 @@ bot.command('status', (ctx) => {
   const state = userStates.get(userId);
   
   if (state) {
-    ctx.reply(`⏳ Sedang memproses: ${state.url} (Format: ${state.format || 'MP3'})`);
+    ctx.reply(`⏳ Sedang memproses: ${state.url} (${state.format || 'mp3'})`);
   } else {
     ctx.reply('✅ Tidak ada proses yang sedang berjalan');
   }
-});
-
-// Command /mp3
-bot.command('mp3', (ctx) => {
-  ctx.reply('🎵 Kirimkan link YouTube untuk dikonversi ke MP3 (audio).');
-});
-
-// Command /mp4
-bot.command('mp4', (ctx) => {
-  ctx.reply('🎬 Kirimkan link YouTube untuk dikonversi ke MP4 (video).');
 });
 
 // Handler untuk pesan teks (link YouTube)
@@ -438,93 +292,92 @@ bot.on('text', async (ctx) => {
   
   const url = messageText;
   
-  // Tampilkan pilihan format
-  const keyboard = {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '🎵 MP3 (Audio)', callback_data: `mp3_${url}` },
-          { text: '🎬 MP4 (Video)', callback_data: `mp4_${url}` }
-        ]
-      ]
-    }
-  };
+  // Set state processing dengan step choose_format
+  userStates.set(userId, { url, step: 'choose_format', startTime: Date.now() });
   
-  await ctx.reply('Pilih format yang diinginkan:', keyboard);
+  // Tampilkan pilihan format
+  await ctx.reply(
+    '🎬 *Pilih format download:*',
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'),
+        Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')
+      ],
+      [Markup.button.callback('❌ Batal', 'format_cancel')]
+    ])
+  );
 });
 
-// Handler untuk callback query (pilihan format)
-bot.on('callback_query', async (ctx) => {
+// Handler untuk pilihan format
+bot.action('format_mp3', async (ctx) => {
+  await processFormat(ctx, 'mp3');
+});
+
+bot.action('format_mp4', async (ctx) => {
+  await processFormat(ctx, 'mp4');
+});
+
+bot.action('format_cancel', async (ctx) => {
   const userId = ctx.from.id;
-  const callbackData = ctx.callbackQuery.data;
+  userStates.delete(userId);
+  await ctx.editMessageText('❌ Proses dibatalkan.');
+});
+
+// Fungsi proses format
+async function processFormat(ctx, format) {
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
   
-  // Cek apakah user sedang dalam proses
-  if (userStates.has(userId)) {
-    await ctx.answerCbQuery('⏳ Mohon tunggu, proses sebelumnya masih berjalan...');
+  if (!state || state.step !== 'choose_format') {
+    await ctx.editMessageText('⏰ Sesi telah berakhir. Kirim link YouTube lagi.');
+    userStates.delete(userId);
     return;
   }
   
-  // Parse callback data
-  const [format, url] = callbackData.split('_');
+  const url = state.url;
+  const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
   
-  if (!format || !url) {
-    await ctx.answerCbQuery('Format tidak valid');
-    return;
-  }
+  userStates.set(userId, { url, format, step: 'processing', startTime: Date.now() });
   
   try {
-    // Set state processing
-    userStates.set(userId, { url, format, startTime: Date.now() });
+    await ctx.editMessageText(`🔍 Menganalisa link YouTube...\nFormat: ${formatName}`);
     
-    await ctx.answerCbQuery(`Memproses konversi ke ${format.toUpperCase()}...`);
+    const loadingMsg = ctx.callbackQuery.message;
     
-    // Kirim pesan loading
-    const loadingMsg = await ctx.reply('🔍 Menganalisa link YouTube...');
-    
-    // Update progress
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      '⚙️ Menghubungkan ke server konversi...'
+      `⚙️ Menghubungkan ke server konversi...\nFormat: ${formatName}`
     );
     
-    // Proses konversi berdasarkan format
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      `🔄 Mengkonversi video ke ${format.toUpperCase()}...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.`
+      `🔄 Mengkonversi video ke ${formatName}...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.`
     );
     
-    let result;
-    if (format === 'mp3') {
-      result = await ytmp3(url);
-    } else if (format === 'mp4') {
-      result = await ytmp4(url);
-    } else {
-      throw new Error('Format tidak didukung');
-    }
+    const result = await ytmp(url, format);
     
     if (!result || !result.downloadUrl) {
       throw new Error('Gagal mendapatkan link download');
     }
     
-    // Hapus pesan loading
     await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
     
-    // Kirim link download
-    const title = result.title || 'Media';
-    const extension = format === 'mp3' ? 'mp3' : 'mp4';
-    const filename = sanitizeFilename(title) + '.' + extension;
-    const formatEmoji = format === 'mp3' ? '🎵' : '🎬';
-    const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
+    const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
+    const extension = format === 'mp3' ? '.mp3' : '.mp4';
+    const filename = sanitizeFilename(title) + extension;
+    
+    const emoji = format === 'mp3' ? '🎵' : '🎬';
+    const typeText = format === 'mp3' ? 'Audio' : 'Video';
     
     const successMessage = 
-      `✅ *Konversi Berhasil!*\n\n` +
-      `${formatEmoji} *Format:* ${formatName}\n` +
-      `🎵 *Judul:* ${title}\n` +
-      `📁 *File:* ${filename}\n\n` +
+      `${emoji} *Konversi Berhasil!*\n\n` +
+      `📝 *Judul:* ${title}\n` +
+      `📁 *File:* ${filename}\n` +
+      `🎚️ *Format:* ${typeText}\n\n` +
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
       `⚠️ *Penting:*\n` +
@@ -537,13 +390,7 @@ bot.on('callback_query', async (ctx) => {
       disable_web_page_preview: false 
     });
     
-    // Clear state
-    userStates.delete(userId);
-    
   } catch (err) {
-    // Clear state
-    userStates.delete(userId);
-    
     log.error(`Error for user ${userId}: ${err.message}`);
     
     let errorMessage = '❌ *Gagal memproses link*\n\n';
@@ -559,8 +406,10 @@ bot.on('callback_query', async (ctx) => {
     }
     
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
+  } finally {
+    userStates.delete(userId);
   }
-});
+}
 
 // Error handler
 bot.catch((err, ctx) => {
@@ -579,7 +428,7 @@ module.exports = async (req, res) => {
       res.status(500).send('Error');
     }
   } else {
-    res.status(200).send('YouTube to MP3/MP4 Bot is running!');
+    res.status(200).send('YouTube Downloader Bot is running!');
   }
 };
 
