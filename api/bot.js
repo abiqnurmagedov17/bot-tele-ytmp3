@@ -5,9 +5,8 @@ const tough = require('tough-cookie');
 
 const CONFIG = {
   TIMEOUT: 30000,
-  MAX_POLLS: 50,
-  POLL_INTERVAL: 2000,
-  MAX_RETRIES: 3,
+  MAX_POLLS: 40,
+  POLL_INTERVAL: 1500,
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -79,25 +78,9 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ✅ 1. Validasi URL sebelum dikirim
-async function isUrlAlive(url) {
-  try {
-    const res = await axios.head(url, { 
-      timeout: 8000,
-      maxRedirects: 5,
-      headers: { 'User-Agent': getUA() }
-    });
-    return res.status === 200;
-  } catch (err) {
-    log.debug(`URL validation failed: ${err.message}`);
-    return false;
-  }
-}
-
-// Fungsi utama dengan validasi URL
-async function ytmp3WithValidation(url, format = 'mp3', retryCount = 0) {
+async function ytmp3(url, format = 'mp3', retryCount = 0) {
   const uniqueUrl = makeUniqueUrl(url);
-  log.debug(`Processing URL: ${uniqueUrl} | Format: ${format} | Attempt ${retryCount + 1}/${CONFIG.MAX_RETRIES}`);
+  log.debug(`Processing URL: ${uniqueUrl} | Format: ${format} | Attempt ${retryCount + 1}/3`);
   
   try {
     const match = uniqueUrl.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
@@ -144,7 +127,7 @@ async function ytmp3WithValidation(url, format = 'mp3', retryCount = 0) {
     
     log.debug('Session initialized successfully');
     
-    await delay(1000);
+    await delay(800);
 
     log.debug(`Step 2: Sending convert request (${format})...`);
     const convert = await client.get(init.data.convertURL, {
@@ -161,27 +144,15 @@ async function ytmp3WithValidation(url, format = 'mp3', retryCount = 0) {
       throw new Error(convert.data.error);
     }
 
-    // ✅ 2. Jangan langsung percaya downloadURL - kasih delay
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-      log.debug('Got direct download URL, validating...');
-      await delay(2500); // Delay biar file beneran ready
-      
+      log.debug('Got direct download URL');
       const title = await getVideoTitle(url);
-      const downloadUrl = convert.data.downloadURL;
-      
-      // ✅ 3. Validasi URL sebelum return
-      if (!(await isUrlAlive(downloadUrl))) {
-        log.debug('Direct URL is dead, will retry...');
-        throw new Error('LINK_NOT_READY');
-      }
-      
-      return { downloadUrl, title, format };
+      return { downloadUrl: convert.data.downloadURL, title, format };
     }
 
     if (convert.data.progressURL) {
       log.debug('Step 3: Starting polling...');
       let polls = 0;
-      let lastProgress = -1;
       
       while (polls < CONFIG.MAX_POLLS) {
         polls++;
@@ -195,28 +166,11 @@ async function ytmp3WithValidation(url, format = 'mp3', retryCount = 0) {
           });
           
           const progressData = prog.data;
+          log.debug(`Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
           
-          // Cek progress berubah
-          if (progressData.progress !== lastProgress) {
-            lastProgress = progressData.progress;
-            log.debug(`Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
-          }
-          
-          // ✅ Dapet URL -> delay + validasi
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
-            log.debug('Got download URL from progress, validating...');
-            await delay(2000); // Delay biar file ready
-            
             const title = await getVideoTitle(url);
-            const downloadUrl = progressData.downloadURL;
-            
-            // ✅ Validasi URL
-            if (!(await isUrlAlive(downloadUrl))) {
-              log.debug('Progress URL is dead, will retry polling...');
-              continue; // Lanjut polling, jangan langsung fail
-            }
-            
-            return { downloadUrl, title, format };
+            return { downloadUrl: progressData.downloadURL, title, format };
           }
           
           if (progressData.error && progressData.error !== 'in_progress') {
@@ -228,17 +182,12 @@ async function ytmp3WithValidation(url, format = 'mp3', retryCount = 0) {
           
           if (err.response?.status === 404) {
             if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-              await delay(2000);
               const title = await getVideoTitle(url);
-              const downloadUrl = convert.data.downloadURL;
-              
-              if (await isUrlAlive(downloadUrl)) {
-                return { downloadUrl, title, format };
-              }
+              return { downloadUrl: convert.data.downloadURL, title, format };
             }
           }
           
-          await delay(1500);
+          await delay(1000);
         }
         
         await delay(CONFIG.POLL_INTERVAL);
@@ -252,17 +201,10 @@ async function ytmp3WithValidation(url, format = 'mp3', retryCount = 0) {
   } catch (err) {
     log.error(`Conversion error: ${err.message}`);
     
-    // ✅ 4. Retry kalau link mati atau belum ready
-    const shouldRetry = retryCount < CONFIG.MAX_RETRIES - 1 && 
-      (err.message.includes('LINK_NOT_READY') || 
-       err.message.includes('Timeout') ||
-       err.message.includes('ECONNREFUSED') ||
-       err.message.includes('socket hang up'));
-    
-    if (shouldRetry) {
-      log.info(`Retrying conversion... (${retryCount + 2}/${CONFIG.MAX_RETRIES})`);
-      await delay(3000);
-      return ytmp3WithValidation(url, format, retryCount + 1);
+    if (retryCount < 2) {
+      log.info(`Retrying conversion... (${retryCount + 2}/3)`);
+      await delay(2000);
+      return ytmp3(url, format, retryCount + 1);
     }
     
     throw err;
@@ -293,16 +235,6 @@ Kirimkan link YouTube, lalu pilih format:
 2. Pilih format MP3 atau MP4
 3. Tunggu proses konversi
 4. Dapatkan link download
-
-━━━━━━━━━━━━━━━━━━━━
-👤 *Owner Bot:* Abiq Nurmagedov
-📦 *GitHub:* github.com/abiqnurmagedov17
-
-⚠️ *Note:*
-Bot ini menggunakan API pihak ketiga 
-hasil scraping dan bisa mati sewaktu-waktu.
-Gunakan dengan bijak!
-━━━━━━━━━━━━━━━━━━━━
 
 Kirim link YouTube sekarang! 🚀
   `;
@@ -418,10 +350,10 @@ async function processFormat(ctx, format) {
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      `🔄 Mengkonversi video ke ${formatName}...\n\n⏳ Ini mungkin memakan waktu 15-60 detik.`
+      `🔄 Mengkonversi video ke ${formatName}...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.`
     );
     
-    const result = await ytmp3WithValidation(url, format);
+    const result = await ytmp3(url, format);
     
     if (!result || !result.downloadUrl) {
       throw new Error('Gagal mendapatkan link download');
@@ -436,7 +368,6 @@ async function processFormat(ctx, format) {
     const emoji = format === 'mp3' ? '🎵' : '🎬';
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
     
-    // ✅ 5. Warning jujur ke user
     const successMessage = 
       `${emoji} *Konversi Berhasil!*\n\n` +
       `📝 *Judul:* ${title}\n` +
@@ -444,11 +375,10 @@ async function processFormat(ctx, format) {
       `🎚️ *Format:* ${typeText}\n\n` +
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
-      `⚠️ *PENTING - BACA INI!*\n` +
-      `• Link bisa expired dalam beberapa menit!\n` +
-      `• Kalau error "code: 2-1" atau 403/404 → link sudah mati\n` +
-      `• Solusi: Kirim ulang link YouTube untuk dapat link baru\n` +
-      `• Jangan tunda download!`;
+      `⚠️ *Penting:*\n` +
+      `• Link hanya berlaku beberapa menit\n` +
+      `• Jika error "code: 2-1", link sudah expired\n` +
+      `• Kirim ulang link YouTube untuk dapat link baru`;
     
     await ctx.reply(successMessage, { 
       parse_mode: 'Markdown', 
@@ -466,10 +396,8 @@ async function processFormat(ctx, format) {
       errorMessage += 'Proses konversi terlalu lama. Silakan coba lagi.';
     } else if (err.message.includes('Video tidak ditemukan')) {
       errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
-    } else if (err.message.includes('LINK_NOT_READY')) {
-      errorMessage += 'Server belum siap. Silakan coba lagi dalam 1 menit.';
     } else {
-      errorMessage += `Server mungkin sibuk. Coba lagi nanti.\n\n_Error: ${err.message}_`;
+      errorMessage += `Silakan coba lagi dengan video lain.\n\n_Error: ${err.message}_`;
     }
     
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
