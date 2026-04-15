@@ -386,7 +386,7 @@ async function processFormat(ctx, format) {
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
       `⚠️ *Penting:*\n` +
-      `• Link hanya berlaku beberapa menit\n` +
+      `• Link hanya berlaku beberapa jam\n` +
       `• Jika error "code: 2-1", link sudah expired\n` +
       `• Kirim ulang link YouTube untuk dapat link baru`;
     
