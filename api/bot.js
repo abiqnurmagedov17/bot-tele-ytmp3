@@ -6,13 +6,12 @@ const tough = require('tough-cookie');
 // Konfigurasi
 const CONFIG = {
   TIMEOUT: 30000,
-  MAX_POLLS: 30,
-  POLL_INTERVAL: 1000,
+  MAX_POLLS: 40, // Tambah polling count
+  POLL_INTERVAL: 1500, // Naikkan interval
   USER_AGENTS: [
-    'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
-    'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36',
-    'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   ]
 };
 
@@ -47,60 +46,106 @@ async function getVideoTitle(url) {
   }
 }
 
-// Fungsi utama konversi - setiap panggilan buat session baru
-async function ytmp3(url) {
-  log.debug(`Processing URL: ${url}`);
+// Fungsi delay
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Fungsi utama konversi dengan retry mechanism
+async function ytmp3(url, retryCount = 0) {
+  log.debug(`Processing URL: ${url} (Attempt ${retryCount + 1}/3)`);
   
   try {
     const match = url.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
     if (!match) throw new Error('URL YouTube tidak valid');
     const videoId = match[1];
 
-    // Buat session baru setiap kali
+    // Buat session baru setiap kali - PENTING!
     const jar = new tough.CookieJar();
+    
+    // Headers yang lebih lengkap seperti browser asli
+    const headers = {
+      'User-Agent': getUA(),
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Referer': 'https://ytmp3.mobi/',
+      'Origin': 'https://ytmp3.mobi',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-site',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
+    };
+
     const client = wrapper(axios.create({
       jar,
       timeout: CONFIG.TIMEOUT,
       maxRedirects: 5,
-      headers: {
-        'User-Agent': getUA(),
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'id-ID,id;q=0.9',
-        'Connection': 'keep-alive',
-        'Referer': 'https://id.ytmp3.mobi/v1/',
-        'Origin': 'https://id.ytmp3.mobi'
-      }
+      headers
     }));
 
-    const init = await client.get('https://a.ymcdn.org/api/v1/init', {
-      params: { p: 'y', '23': '1llum1n471', _: Math.random() }
+    // Step 1: Init session
+    log.debug('Step 1: Initializing session...');
+    const initUrl = 'https://a.ymcdn.org/api/v1/init';
+    const init = await client.get(initUrl, {
+      params: { 
+        p: 'y', 
+        '23': '1llum1n471', 
+        _: Date.now() 
+      }
     });
     
     if (init.data.error) throw new Error(init.data.error);
-    if (!init.data.convertURL) throw new Error('Gagal inisialisasi');
+    if (!init.data.convertURL) throw new Error('Gagal inisialisasi - no convertURL');
+    
+    log.debug('Session initialized successfully');
+    
+    // Delay kecil sebelum request berikutnya
+    await delay(500);
 
+    // Step 2: Convert request
+    log.debug('Step 2: Sending convert request...');
     const convert = await client.get(init.data.convertURL, {
-      params: { v: videoId, f: 'mp3', _: Math.random() }
+      params: { 
+        v: videoId, 
+        f: 'mp3', 
+        _: Date.now() 
+      }
     });
+    
+    log.debug(`Convert response: ${JSON.stringify(convert.data)}`);
     
     if (convert.data.error && convert.data.error !== 'in_progress') {
       throw new Error(convert.data.error);
     }
 
+    // Cek apakah langsung dapat download URL
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
+      log.debug('Got direct download URL');
       const title = await getVideoTitle(url);
       return { downloadUrl: convert.data.downloadURL, title };
     }
 
+    // Step 3: Polling progress
     if (convert.data.progressURL) {
+      log.debug('Step 3: Starting polling...');
       let polls = 0;
       
       while (polls < CONFIG.MAX_POLLS) {
         polls++;
         
         try {
-          const prog = await client.get(convert.data.progressURL);
+          const prog = await client.get(convert.data.progressURL, {
+            headers: {
+              'Referer': 'https://ytmp3.mobi/',
+              'Origin': 'https://ytmp3.mobi'
+            }
+          });
+          
           const progressData = prog.data;
+          log.debug(`Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
           
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
             const title = await getVideoTitle(url);
@@ -112,16 +157,21 @@ async function ytmp3(url) {
           }
           
         } catch (err) {
+          log.debug(`Poll error: ${err.message}`);
+          
+          // Jika 404, mungkin URL sudah expired, coba ambil dari data awal
           if (err.response?.status === 404) {
             if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
               const title = await getVideoTitle(url);
               return { downloadUrl: convert.data.downloadURL, title };
             }
           }
-          // Skip error lain saat polling, lanjutkan
+          
+          // Error lain saat polling, lanjutkan tapi dengan delay lebih lama
+          await delay(1000);
         }
         
-        await new Promise(r => setTimeout(r, CONFIG.POLL_INTERVAL));
+        await delay(CONFIG.POLL_INTERVAL);
       }
       
       throw new Error('Timeout - konversi terlalu lama');
@@ -131,6 +181,14 @@ async function ytmp3(url) {
 
   } catch (err) {
     log.error(`Conversion error: ${err.message}`);
+    
+    // Retry mechanism
+    if (retryCount < 2) {
+      log.info(`Retrying conversion... (${retryCount + 2}/3)`);
+      await delay(2000);
+      return ytmp3(url, retryCount + 1);
+    }
+    
     throw err;
   }
 }
@@ -244,7 +302,7 @@ bot.on('text', async (ctx) => {
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      '🔄 Mengkonversi video ke MP3...\n\n⏳ Ini mungkin memakan waktu 10-30 detik.'
+      '🔄 Mengkonversi video ke MP3...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.'
     );
     
     const result = await ytmp3(url);
@@ -267,9 +325,9 @@ bot.on('text', async (ctx) => {
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
       `⚠️ *Penting:*\n` +
-      `• Link berlaku ~1 jam\n` +
-      `• Jika link expired, kirim ulang link YouTube\n` +
-      `• Gunakan browser atau download manager`;
+      `• Link hanya berlaku beberapa menit\n` +
+      `• Jika error "code: 2-1", link sudah expired\n` +
+      `• Kirim ulang link YouTube untuk dapat link baru`;
     
     await ctx.reply(successMessage, { 
       parse_mode: 'Markdown', 
@@ -293,10 +351,8 @@ bot.on('text', async (ctx) => {
       errorMessage += 'Proses konversi terlalu lama. Silakan coba lagi.';
     } else if (err.message.includes('Video tidak ditemukan')) {
       errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
-    } else if (err.message.includes('410') || err.message.includes('expired')) {
-      errorMessage += 'Link download expired. Silakan kirim ulang link YouTube untuk konversi baru.';
     } else {
-      errorMessage += `*Error:* ${err.message}\n\nSilakan coba lagi nanti atau coba video lain.`;
+      errorMessage += `Silakan coba lagi dengan video lain.\n\n_Error: ${err.message}_`;
     }
     
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
