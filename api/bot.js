@@ -1,24 +1,22 @@
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 
-// Konfigurasi
 const CONFIG = {
   TIMEOUT: 30000,
-  MAX_POLLS: 40, // Tambah polling count
-  POLL_INTERVAL: 1500, // Naikkan interval
+  MAX_POLLS: 40,
+  POLL_INTERVAL: 1500,
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36'
   ]
 };
 
-// State untuk tracking progress per user
 const userStates = new Map();
 
-// Logger sederhana
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
   error: (msg) => console.log(`[ERROR] ${msg}`),
@@ -31,7 +29,37 @@ function getUA() {
 
 function sanitizeFilename(name) {
   const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);
-  return clean || 'audio';
+  return clean || 'video';
+}
+
+function makeUniqueUrl(url) {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/,
+    /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
+    /(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
+    /(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/
+  ];
+  
+  let videoId = null;
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) {
+      videoId = match[1];
+      break;
+    }
+  }
+  
+  if (!videoId) return url;
+  
+  const uniqueParam = `cacheBuster=${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+  
+  if (url.includes('youtu.be/')) {
+    return `https://youtu.be/${videoId}?${uniqueParam}`;
+  } else if (url.includes('shorts/')) {
+    return `https://youtube.com/shorts/${videoId}?${uniqueParam}`;
+  } else {
+    return `https://youtube.com/watch?v=${videoId}&${uniqueParam}`;
+  }
 }
 
 async function getVideoTitle(url) {
@@ -40,42 +68,39 @@ async function getVideoTitle(url) {
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { 
       timeout: 5000 
     });
-    return response.data?.title || `audio_${Date.now()}`;
+    return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
-    return `audio_${Date.now()}`;
+    return `video_${Date.now()}`;
   }
 }
 
-// Fungsi delay
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Fungsi utama konversi dengan retry mechanism
-async function ytmp3(url, retryCount = 0) {
-  log.debug(`Processing URL: ${url} (Attempt ${retryCount + 1}/3)`);
+async function ytmp3(url, format = 'mp3', retryCount = 0) {
+  const uniqueUrl = makeUniqueUrl(url);
+  log.debug(`Processing URL: ${uniqueUrl} | Format: ${format} | Attempt ${retryCount + 1}/3`);
   
   try {
-    const match = url.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
+    const match = uniqueUrl.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
     if (!match) throw new Error('URL YouTube tidak valid');
     const videoId = match[1];
 
-    // Buat session baru setiap kali - PENTING!
     const jar = new tough.CookieJar();
     
-    // Headers yang lebih lengkap seperti browser asli
     const headers = {
       'User-Agent': getUA(),
       'Accept': 'application/json, text/plain, */*',
       'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
-      'Referer': 'https://ytmp3.mobi/',
+      'Referer': 'https://ytmp3.mobi/en8/',
       'Origin': 'https://ytmp3.mobi',
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Pragma': 'no-cache'
     };
 
@@ -86,14 +111,14 @@ async function ytmp3(url, retryCount = 0) {
       headers
     }));
 
-    // Step 1: Init session
     log.debug('Step 1: Initializing session...');
     const initUrl = 'https://a.ymcdn.org/api/v1/init';
     const init = await client.get(initUrl, {
       params: { 
         p: 'y', 
         '23': '1llum1n471', 
-        _: Date.now() 
+        _: Date.now(),
+        r: Math.random().toString(36).substring(2, 15)
       }
     });
     
@@ -102,33 +127,29 @@ async function ytmp3(url, retryCount = 0) {
     
     log.debug('Session initialized successfully');
     
-    // Delay kecil sebelum request berikutnya
-    await delay(500);
+    await delay(800);
 
-    // Step 2: Convert request
-    log.debug('Step 2: Sending convert request...');
+    log.debug(`Step 2: Sending convert request (${format})...`);
     const convert = await client.get(init.data.convertURL, {
       params: { 
         v: videoId, 
-        f: 'mp3', 
+        f: format,
         _: Date.now() 
       }
     });
     
-    log.debug(`Convert response: ${JSON.stringify(convert.data)}`);
+    log.debug(`Convert response: ${JSON.stringify(convert.data).substring(0, 200)}...`);
     
     if (convert.data.error && convert.data.error !== 'in_progress') {
       throw new Error(convert.data.error);
     }
 
-    // Cek apakah langsung dapat download URL
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
       log.debug('Got direct download URL');
       const title = await getVideoTitle(url);
-      return { downloadUrl: convert.data.downloadURL, title };
+      return { downloadUrl: convert.data.downloadURL, title, format };
     }
 
-    // Step 3: Polling progress
     if (convert.data.progressURL) {
       log.debug('Step 3: Starting polling...');
       let polls = 0;
@@ -139,7 +160,7 @@ async function ytmp3(url, retryCount = 0) {
         try {
           const prog = await client.get(convert.data.progressURL, {
             headers: {
-              'Referer': 'https://ytmp3.mobi/',
+              'Referer': 'https://ytmp3.mobi/en8/',
               'Origin': 'https://ytmp3.mobi'
             }
           });
@@ -149,7 +170,7 @@ async function ytmp3(url, retryCount = 0) {
           
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
             const title = await getVideoTitle(url);
-            return { downloadUrl: progressData.downloadURL, title };
+            return { downloadUrl: progressData.downloadURL, title, format };
           }
           
           if (progressData.error && progressData.error !== 'in_progress') {
@@ -159,15 +180,13 @@ async function ytmp3(url, retryCount = 0) {
         } catch (err) {
           log.debug(`Poll error: ${err.message}`);
           
-          // Jika 404, mungkin URL sudah expired, coba ambil dari data awal
           if (err.response?.status === 404) {
             if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
               const title = await getVideoTitle(url);
-              return { downloadUrl: convert.data.downloadURL, title };
+              return { downloadUrl: convert.data.downloadURL, title, format };
             }
           }
           
-          // Error lain saat polling, lanjutkan tapi dengan delay lebih lama
           await delay(1000);
         }
         
@@ -182,21 +201,18 @@ async function ytmp3(url, retryCount = 0) {
   } catch (err) {
     log.error(`Conversion error: ${err.message}`);
     
-    // Retry mechanism
     if (retryCount < 2) {
       log.info(`Retrying conversion... (${retryCount + 2}/3)`);
       await delay(2000);
-      return ytmp3(url, retryCount + 1);
+      return ytmp3(url, format, retryCount + 1);
     }
     
     throw err;
   }
 }
 
-// Inisialisasi bot dengan token dari environment variable
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Middleware untuk logging
 bot.use(async (ctx, next) => {
   const start = Date.now();
   await next();
@@ -204,26 +220,21 @@ bot.use(async (ctx, next) => {
   log.info(`${ctx.from?.first_name || 'User'}: ${ctx.message?.text || ctx.callbackQuery?.data || 'Interaction'} (${ms}ms)`);
 });
 
-// Command /start
 bot.start((ctx) => {
   const welcomeMessage = `
-🎵 *YouTube to MP3 Bot* 🎵
+🎬 *YouTube Downloader Bot* 🎬
 
 Halo ${ctx.from.first_name || 'Kak'}!
 
-Kirimkan link YouTube, bot akan memberikan link download MP3.
-
-*Fitur:*
-• Konversi YouTube ke MP3
-• Link download langsung
-• Tanpa batasan durasi
-• Gratis!
+Kirimkan link YouTube, lalu pilih format:
+• *MP3* - Audio only
+• *MP4* - Video with audio
 
 *Cara penggunaan:*
-1. Copy link YouTube
-2. Kirim link ke bot ini
+1. Kirim link YouTube
+2. Pilih format MP3 atau MP4
 3. Tunggu proses konversi
-4. Dapatkan link download MP3
+4. Dapatkan link download
 
 Kirim link YouTube sekarang! 🚀
   `;
@@ -231,11 +242,13 @@ Kirim link YouTube sekarang! 🚀
   ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
 });
 
-// Command /help
 bot.help((ctx) => {
   ctx.reply(
     '📖 *Bantuan*\n\n' +
-    'Kirimkan link YouTube untuk mendapatkan link download MP3.\n\n' +
+    'Kirimkan link YouTube, lalu pilih format.\n\n' +
+    '*Format:*\n' +
+    '• MP3 - Audio (musik, podcast)\n' +
+    '• MP4 - Video (tanpa watermark)\n\n' +
     '*Contoh link:*\n' +
     '• https://youtube.com/watch?v=xxxxx\n' +
     '• https://youtu.be/xxxxx\n' +
@@ -248,30 +261,26 @@ bot.help((ctx) => {
   );
 });
 
-// Command /status
 bot.command('status', (ctx) => {
   const userId = ctx.from.id;
   const state = userStates.get(userId);
   
   if (state) {
-    ctx.reply(`⏳ Sedang memproses: ${state.url}`);
+    ctx.reply(`⏳ Sedang memproses: ${state.url} (${state.format || 'mp3'})`);
   } else {
     ctx.reply('✅ Tidak ada proses yang sedang berjalan');
   }
 });
 
-// Handler untuk pesan teks (link YouTube)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const messageText = ctx.message.text.trim();
   
-  // Cek apakah user sedang dalam proses
   if (userStates.has(userId)) {
     ctx.reply('⏳ Mohon tunggu, proses sebelumnya masih berjalan...');
     return;
   }
   
-  // Cek apakah pesan mengandung URL YouTube
   const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;
   const match = messageText.match(youtubeRegex);
   
@@ -282,46 +291,88 @@ bot.on('text', async (ctx) => {
   
   const url = messageText;
   
+  userStates.set(userId, { url, step: 'choose_format', startTime: Date.now() });
+  
+  await ctx.reply(
+    '🎬 *Pilih format download:*',
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'),
+        Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')
+      ],
+      [Markup.button.callback('❌ Batal', 'format_cancel')]
+    ])
+  );
+});
+
+bot.action('format_mp3', async (ctx) => {
+  await processFormat(ctx, 'mp3');
+});
+
+bot.action('format_mp4', async (ctx) => {
+  await processFormat(ctx, 'mp4');
+});
+
+bot.action('format_cancel', async (ctx) => {
+  const userId = ctx.from.id;
+  userStates.delete(userId);
+  await ctx.editMessageText('❌ Proses dibatalkan.');
+});
+
+async function processFormat(ctx, format) {
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  
+  if (!state || state.step !== 'choose_format') {
+    await ctx.editMessageText('⏰ Sesi telah berakhir. Kirim link YouTube lagi.');
+    userStates.delete(userId);
+    return;
+  }
+  
+  const url = state.url;
+  const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
+  
+  userStates.set(userId, { url, format, step: 'processing', startTime: Date.now() });
+  
   try {
-    // Set state processing
-    userStates.set(userId, { url, startTime: Date.now() });
+    await ctx.editMessageText(`🔍 Menganalisa link YouTube...\nFormat: ${formatName}`);
     
-    // Kirim pesan loading
-    const loadingMsg = await ctx.reply('🔍 Menganalisa link YouTube...');
+    const loadingMsg = ctx.callbackQuery.message;
     
-    // Update progress
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      '⚙️ Menghubungkan ke server konversi...'
+      `⚙️ Menghubungkan ke server konversi...\nFormat: ${formatName}`
     );
     
-    // Proses konversi
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      '🔄 Mengkonversi video ke MP3...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.'
+      `🔄 Mengkonversi video ke ${formatName}...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.`
     );
     
-    const result = await ytmp3(url);
+    const result = await ytmp3(url, format);
     
     if (!result || !result.downloadUrl) {
       throw new Error('Gagal mendapatkan link download');
     }
     
-    // Hapus pesan loading
     await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
     
-    // Kirim link download
-    const title = result.title || 'Audio';
-    const filename = sanitizeFilename(title) + '.mp3';
+    const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
+    const extension = format === 'mp3' ? '.mp3' : '.mp4';
+    const filename = sanitizeFilename(title) + extension;
+    
+    const emoji = format === 'mp3' ? '🎵' : '🎬';
+    const typeText = format === 'mp3' ? 'Audio' : 'Video';
     
     const successMessage = 
-      `✅ *Konversi Berhasil!*\n\n` +
-      `🎵 *Judul:* ${title}\n` +
-      `📁 *File:* ${filename}\n\n` +
+      `${emoji} *Konversi Berhasil!*\n\n` +
+      `📝 *Judul:* ${title}\n` +
+      `📁 *File:* ${filename}\n` +
+      `🎚️ *Format:* ${typeText}\n\n` +
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
       `⚠️ *Penting:*\n` +
@@ -334,13 +385,7 @@ bot.on('text', async (ctx) => {
       disable_web_page_preview: false 
     });
     
-    // Clear state
-    userStates.delete(userId);
-    
   } catch (err) {
-    // Clear state
-    userStates.delete(userId);
-    
     log.error(`Error for user ${userId}: ${err.message}`);
     
     let errorMessage = '❌ *Gagal memproses link*\n\n';
@@ -356,16 +401,16 @@ bot.on('text', async (ctx) => {
     }
     
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
+  } finally {
+    userStates.delete(userId);
   }
-});
+}
 
-// Error handler
 bot.catch((err, ctx) => {
   log.error(`Bot error: ${err}`);
   ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {});
 });
 
-// Vercel serverless handler
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
@@ -376,11 +421,10 @@ module.exports = async (req, res) => {
       res.status(500).send('Error');
     }
   } else {
-    res.status(200).send('YouTube to MP3 Bot is running!');
+    res.status(200).send('YouTube Downloader Bot is running!');
   }
 };
 
-// Untuk development local
 if (require.main === module) {
   log.info('Starting bot in polling mode...');
   bot.launch();
