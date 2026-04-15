@@ -236,6 +236,16 @@ Kirimkan link YouTube, lalu pilih format:
 3. Tunggu proses konversi
 4. Dapatkan link download
 
+━━━━━━━━━━━━━━━━━━━━
+👤 *Owner Bot:* Abiq Nurmagedov
+📦 *GitHub:* github.com/abiqnurmagedov17
+
+⚠️ *Note:*
+Bot ini menggunakan API pihak ketiga 
+hasil scraping dan bisa mati sewaktu-waktu.
+Gunakan dengan bijak!
+━━━━━━━━━━━━━━━━━━━━
+
 Kirim link YouTube sekarang! 🚀
   `;
   
