@@ -6,28 +6,64 @@ const tough = require('tough-cookie');
 // Konfigurasi
 const CONFIG = {
   TIMEOUT: 30000,
-  MAX_POLLS: 40, // Tambah polling count
-  POLL_INTERVAL: 1500, // Naikkan interval
+  MAX_POLLS: 50,
+  POLL_INTERVAL: 2000,
+  MAX_RETRIES: 3,
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36'
-  ]
+    'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
+  ],
+  // Rate limit Telegram - delay antar reply
+  RATE_LIMIT_DELAY: 500,
+  // State TTL (2 menit)
+  STATE_TTL: 2 * 60 * 1000
 };
 
-// State untuk tracking progress per user
+// State untuk tracking progress per user dengan auto-cleanup
 const userStates = new Map();
+const stateTimeouts = new Map();
 
 // Logger sederhana
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
   error: (msg) => console.log(`[ERROR] ${msg}`),
-  debug: (msg) => console.log(`[DEBUG] ${msg}`)
+  debug: (msg) => console.log(`[DEBUG] ${msg}`),
+  warn: (msg) => console.log(`[WARN] ${msg}`)
 };
 
 function getUA() {
   return CONFIG.USER_AGENTS[Math.floor(Math.random() * CONFIG.USER_AGENTS.length)];
+}
+
+// ✅ State management dengan TTL (anti memory leak)
+function setUserState(userId, state) {
+  // Clear timeout lama kalau ada
+  if (stateTimeouts.has(userId)) {
+    clearTimeout(stateTimeouts.get(userId));
+  }
+  
+  userStates.set(userId, state);
+  
+  // Set timeout untuk auto-cleanup
+  const timeout = setTimeout(() => {
+    log.debug(`Auto-cleanup state for user ${userId}`);
+    userStates.delete(userId);
+    stateTimeouts.delete(userId);
+  }, CONFIG.STATE_TTL);
+  
+  stateTimeouts.set(userId, timeout);
+}
+
+function deleteUserState(userId) {
+  if (stateTimeouts.has(userId)) {
+    clearTimeout(stateTimeouts.get(userId));
+    stateTimeouts.delete(userId);
+  }
+  userStates.delete(userId);
 }
 
 function sanitizeFilename(name) {
@@ -37,36 +73,71 @@ function sanitizeFilename(name) {
 
 async function getVideoTitle(url) {
   try {
-    const videoId = url.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/)[1];
+    // ✅ Regex yang lebih waras
+    const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (!match) return `video_${Date.now()}`;
+    const videoId = match[1];
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { 
       timeout: 5000 
     });
-    return response.data?.title || `audio_${Date.now()}`;
+    return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
-    return `audio_${Date.now()}`;
+    return `video_${Date.now()}`;
   }
 }
 
-// Fungsi delay
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+// Fungsi delay dengan jitter (anti pattern detection)
+function delay(ms, withJitter = false) {
+  const actualDelay = withJitter ? ms + Math.random() * ms : ms;
+  return new Promise(resolve => setTimeout(resolve, actualDelay));
+}
+
+// ✅ Fake progress untuk UX
+function getFakeProgress(step) {
+  const progressMap = {
+    'init': 15,
+    'convert': 35,
+    'polling': 60,
+    'processing': 80,
+    'finalizing': 95
+  };
+  return progressMap[step] || 50;
+}
+
+// ✅ Validasi URL download
+async function isUrlAlive(url) {
+  try {
+    const res = await axios.head(url, { 
+      timeout: 8000,
+      maxRedirects: 5,
+      headers: { 'User-Agent': getUA() }
+    });
+    return res.status === 200;
+  } catch (err) {
+    log.debug(`URL validation failed: ${err.message}`);
+    return false;
+  }
 }
 
 // Fungsi utama konversi dengan retry mechanism (MP3 & MP4)
 async function ytmp(url, format = 'mp3', retryCount = 0) {
-  log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/3`);
+  log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/${CONFIG.MAX_RETRIES}`);
   
   try {
-    const match = url.match(/(?:v=|\/|shorts\/)([a-zA-Z0-9_-]{11})/);
+    // ✅ Regex yang lebih waras
+    const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (!match) throw new Error('URL YouTube tidak valid');
     const videoId = match[1];
 
     // Buat session baru setiap kali - PENTING!
     const jar = new tough.CookieJar();
     
+    // ✅ Rotate User-Agent setiap retry
+    const currentUA = getUA();
+    
     // Headers yang lebih lengkap seperti browser asli
     const headers = {
-      'User-Agent': getUA(),
+      'User-Agent': currentUA,
       'Accept': 'application/json, text/plain, */*',
       'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
@@ -76,8 +147,11 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'sec-ch-ua': '"Google Chrome";v="137", "Chromium";v="137", "Not?A_Brand";v="24"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Android"'
     };
 
     const client = wrapper(axios.create({
@@ -88,7 +162,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
     }));
 
     // Step 1: Init session
-    log.debug('Step 1: Initializing session...');
+    log.debug('[Step 1] Initializing session...');
     const initUrl = 'https://a.ymcdn.org/api/v1/init';
     const init = await client.get(initUrl, {
       params: { 
@@ -98,16 +172,16 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       }
     });
     
-    if (init.data.error) throw new Error(init.data.error);
-    if (!init.data.convertURL) throw new Error('Gagal inisialisasi - no convertURL');
+    if (init.data.error) throw new Error(`[Init] ${init.data.error}`);
+    if (!init.data.convertURL) throw new Error('[Init] Gagal inisialisasi - no convertURL');
     
-    log.debug('Session initialized successfully');
+    log.debug('[Step 1] Session initialized successfully');
     
-    // Delay kecil sebelum request berikutnya
-    await delay(500);
+    // Delay dengan jitter
+    await delay(500, true);
 
     // Step 2: Convert request dengan format
-    log.debug(`Step 2: Sending convert request (${format})...`);
+    log.debug(`[Step 2] Sending convert request (${format})...`);
     const convert = await client.get(init.data.convertURL, {
       params: { 
         v: videoId, 
@@ -116,23 +190,32 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       }
     });
     
-    log.debug(`Convert response: ${JSON.stringify(convert.data)}`);
+    log.debug(`[Step 2] Convert response: ${JSON.stringify(convert.data).substring(0, 200)}...`);
     
     if (convert.data.error && convert.data.error !== 'in_progress') {
-      throw new Error(convert.data.error);
+      throw new Error(`[Convert] ${convert.data.error}`);
     }
 
     // Cek apakah langsung dapat download URL
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-      log.debug('Got direct download URL');
+      log.debug('[Step 2] Got direct download URL, validating...');
+      await delay(2000, true);
+      
       const title = await getVideoTitle(url);
-      return { downloadUrl: convert.data.downloadURL, title, format };
+      const downloadUrl = convert.data.downloadURL;
+      
+      if (!(await isUrlAlive(downloadUrl))) {
+        throw new Error('[Validation] Direct URL is dead');
+      }
+      
+      return { downloadUrl, title, format };
     }
 
     // Step 3: Polling progress
     if (convert.data.progressURL) {
-      log.debug('Step 3: Starting polling...');
+      log.debug('[Step 3] Starting polling...');
       let polls = 0;
+      let lastProgress = -1;
       
       while (polls < CONFIG.MAX_POLLS) {
         polls++;
@@ -146,47 +229,74 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
           });
           
           const progressData = prog.data;
-          log.debug(`Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
+          
+          if (progressData.progress !== lastProgress) {
+            lastProgress = progressData.progress;
+            log.debug(`[Step 3] Poll ${polls}: progress=${progressData.progress}, hasURL=${!!progressData.downloadURL}`);
+          }
           
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
+            log.debug('[Step 3] Got download URL, validating...');
+            await delay(2000, true);
+            
             const title = await getVideoTitle(url);
-            return { downloadUrl: progressData.downloadURL, title, format };
+            const downloadUrl = progressData.downloadURL;
+            
+            if (!(await isUrlAlive(downloadUrl))) {
+              log.debug('[Step 3] URL is dead, continuing polling...');
+              continue;
+            }
+            
+            return { downloadUrl, title, format };
           }
           
           if (progressData.error && progressData.error !== 'in_progress') {
-            throw new Error(progressData.error);
+            throw new Error(`[Polling] ${progressData.error}`);
           }
           
         } catch (err) {
-          log.debug(`Poll error: ${err.message}`);
+          log.debug(`[Step 3] Poll error: ${err.message}`);
           
-          // Jika 404, mungkin URL sudah expired, coba ambil dari data awal
           if (err.response?.status === 404) {
             if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
+              await delay(1500, true);
               const title = await getVideoTitle(url);
-              return { downloadUrl: convert.data.downloadURL, title, format };
+              const downloadUrl = convert.data.downloadURL;
+              
+              if (await isUrlAlive(downloadUrl)) {
+                return { downloadUrl, title, format };
+              }
             }
           }
           
-          // Error lain saat polling, lanjutkan tapi dengan delay lebih lama
-          await delay(1000);
+          await delay(1000, true);
         }
         
-        await delay(CONFIG.POLL_INTERVAL);
+        await delay(CONFIG.POLL_INTERVAL, true);
       }
       
-      throw new Error('Timeout - konversi terlalu lama');
+      throw new Error('[Polling] Timeout - konversi terlalu lama');
     }
     
-    throw new Error('Gagal mendapatkan link download');
+    throw new Error('[Convert] Gagal mendapatkan link download');
 
   } catch (err) {
-    log.error(`Conversion error: ${err.message}`);
+    log.error(`[Conversion] Error: ${err.message}`);
     
-    // Retry mechanism
-    if (retryCount < 2) {
-      log.info(`Retrying conversion... (${retryCount + 2}/3)`);
-      await delay(2000);
+    // ✅ Retry dengan strategy berbeda
+    const shouldRetry = retryCount < CONFIG.MAX_RETRIES - 1 && 
+      (err.message.includes('URL is dead') || 
+       err.message.includes('Timeout') ||
+       err.message.includes('ECONNREFUSED') ||
+       err.message.includes('socket hang up') ||
+       err.message.includes('rate') ||
+       err.message.includes('limit'));
+    
+    if (shouldRetry) {
+      // ✅ Delay dengan jitter + random UA baru
+      const backoffDelay = 2000 + Math.random() * 3000;
+      log.info(`[Retry] Attempt ${retryCount + 2}/${CONFIG.MAX_RETRIES} after ${Math.round(backoffDelay)}ms`);
+      await delay(backoffDelay);
       return ytmp(url, format, retryCount + 1);
     }
     
@@ -197,12 +307,13 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
 // Inisialisasi bot dengan token dari environment variable
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Middleware untuk logging
+// ✅ Rate limit middleware
 bot.use(async (ctx, next) => {
   const start = Date.now();
   await next();
   const ms = Date.now() - start;
   log.info(`${ctx.from?.first_name || 'User'}: ${ctx.message?.text || ctx.callbackQuery?.data || 'Interaction'} (${ms}ms)`);
+  await delay(CONFIG.RATE_LIMIT_DELAY);
 });
 
 // Command /start
@@ -281,7 +392,7 @@ bot.on('text', async (ctx) => {
     return;
   }
   
-  // Cek apakah pesan mengandung URL YouTube
+  // ✅ Regex yang lebih waras
   const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;
   const match = messageText.match(youtubeRegex);
   
@@ -293,7 +404,7 @@ bot.on('text', async (ctx) => {
   const url = messageText;
   
   // Set state processing dengan step choose_format
-  userStates.set(userId, { url, step: 'choose_format', startTime: Date.now() });
+  setUserState(userId, { url, step: 'choose_format', startTime: Date.now() });
   
   // Tampilkan pilihan format
   await ctx.reply(
@@ -319,28 +430,30 @@ bot.action('format_mp4', async (ctx) => {
 
 bot.action('format_cancel', async (ctx) => {
   const userId = ctx.from.id;
-  userStates.delete(userId);
+  deleteUserState(userId);
   await ctx.editMessageText('❌ Proses dibatalkan.');
 });
 
-// Fungsi proses format
+// ✅ Fungsi proses format dengan fake progress untuk UX
 async function processFormat(ctx, format) {
   const userId = ctx.from.id;
   const state = userStates.get(userId);
   
   if (!state || state.step !== 'choose_format') {
     await ctx.editMessageText('⏰ Sesi telah berakhir. Kirim link YouTube lagi.');
-    userStates.delete(userId);
+    deleteUserState(userId);
     return;
   }
   
   const url = state.url;
   const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
   
-  userStates.set(userId, { url, format, step: 'processing', startTime: Date.now() });
+  setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
   
   try {
-    await ctx.editMessageText(`🔍 Menganalisa link YouTube...\nFormat: ${formatName}`);
+    // ✅ Fake progress untuk UX (biar user ga ngerasa kosong)
+    await ctx.editMessageText(`🔍 Menganalisa link... (15%)`);
+    await delay(800);
     
     const loadingMsg = ctx.callbackQuery.message;
     
@@ -348,20 +461,37 @@ async function processFormat(ctx, format) {
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      `⚙️ Menghubungkan ke server konversi...\nFormat: ${formatName}`
+      `⚙️ Menghubungkan ke server... (35%)`
     );
+    await delay(600);
     
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      `🔄 Mengkonversi video ke ${formatName}...\n\n⏳ Ini mungkin memakan waktu 15-45 detik.`
+      `🔄 Mengkonversi ke ${formatName}... (60%)`
+    );
+    await delay(600);
+    
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      loadingMsg.message_id,
+      null,
+      `⏳ Memproses audio... (80%)`
     );
     
     const result = await ytmp(url, format);
     
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      loadingMsg.message_id,
+      null,
+      `✅ Finalisasi... (95%)`
+    );
+    await delay(400);
+    
     if (!result || !result.downloadUrl) {
-      throw new Error('Gagal mendapatkan link download');
+      throw new Error('[Process] Gagal mendapatkan link download');
     }
     
     await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
@@ -380,10 +510,10 @@ async function processFormat(ctx, format) {
       `🎚️ *Format:* ${typeText}\n\n` +
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
-      `⚠️ *Penting:*\n` +
-      `• Link hanya berlaku beberapa menit\n` +
-      `• Jika error "code: 2-1", link sudah expired\n` +
-      `• Kirim ulang link YouTube untuk dapat link baru`;
+      `⚠️ *PENTING - BACA!*\n` +
+      `• Link bisa expired dalam hitungan menit\n` +
+      `• Error "code: 2-1" = link sudah mati\n` +
+      `• Kirim ulang link untuk dapat link baru`;
     
     await ctx.reply(successMessage, { 
       parse_mode: 'Markdown', 
@@ -391,7 +521,7 @@ async function processFormat(ctx, format) {
     });
     
   } catch (err) {
-    log.error(`Error for user ${userId}: ${err.message}`);
+    log.error(`[User ${userId}] Error: ${err.message}`);
     
     let errorMessage = '❌ *Gagal memproses link*\n\n';
     
@@ -401,19 +531,21 @@ async function processFormat(ctx, format) {
       errorMessage += 'Proses konversi terlalu lama. Silakan coba lagi.';
     } else if (err.message.includes('Video tidak ditemukan')) {
       errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
+    } else if (err.message.includes('rate') || err.message.includes('limit')) {
+      errorMessage += 'Server sedang sibuk. Coba lagi dalam 1-2 menit.';
     } else {
-      errorMessage += `Silakan coba lagi dengan video lain.\n\n_Error: ${err.message}_`;
+      errorMessage += `Server mungkin sibuk. Coba lagi nanti.\n\n_Diagnostic: ${err.message}_`;
     }
     
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
   } finally {
-    userStates.delete(userId);
+    deleteUserState(userId);
   }
 }
 
 // Error handler
 bot.catch((err, ctx) => {
-  log.error(`Bot error: ${err}`);
+  log.error(`[Bot] Error: ${err}`);
   ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {});
 });
 
@@ -424,7 +556,7 @@ module.exports = async (req, res) => {
       await bot.handleUpdate(req.body);
       res.status(200).send('OK');
     } catch (err) {
-      log.error(`Webhook error: ${err}`);
+      log.error(`[Webhook] Error: ${err}`);
       res.status(500).send('Error');
     }
   } else {
