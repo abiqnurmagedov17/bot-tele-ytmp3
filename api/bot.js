@@ -1,5 +1,7 @@
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
+const { wrapper } = require('axios-cookiejar-support');
+const tough = require('tough-cookie');
 
 const CONFIG = {
   TIMEOUT: 30000,
@@ -85,26 +87,29 @@ async function ytmp3(url, format = 'mp3', retryCount = 0) {
     if (!match) throw new Error('URL YouTube tidak valid');
     const videoId = match[1];
 
-    // Buat axios instance dengan withCredentials untuk auto handle cookie
-    const client = axios.create({
+    const jar = new tough.CookieJar();
+    
+    const headers = {
+      'User-Agent': getUA(),
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Referer': 'https://ytmp3.mobi/en8/',
+      'Origin': 'https://ytmp3.mobi',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-site',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache'
+    };
+
+    const client = wrapper(axios.create({
+      jar,
       timeout: CONFIG.TIMEOUT,
       maxRedirects: 5,
-      withCredentials: true,
-      headers: {
-        'User-Agent': getUA(),
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Referer': 'https://ytmp3.mobi/en8/',
-        'Origin': 'https://ytmp3.mobi',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache'
-      }
-    });
+      headers
+    }));
 
     log.debug('Step 1: Initializing session...');
     const initUrl = 'https://a.ymcdn.org/api/v1/init';
