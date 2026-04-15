@@ -3,8 +3,5 @@
     "api/bot.js": {
       "maxDuration": 60
     }
-  },
-  "env": {
-    "BOT_TOKEN": "@bot-token-env"
   }
 }
