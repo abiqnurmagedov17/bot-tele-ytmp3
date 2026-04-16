@@ -3,7 +3,6 @@ const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 
-// Konfigurasi
 const CONFIG = {
   TIMEOUT: 30000,
   MAX_POLLS: 50,
@@ -21,11 +20,9 @@ const CONFIG = {
   STATE_TTL: 2 * 60 * 1000
 };
 
-// State untuk tracking progress per user dengan auto-cleanup
 const userStates = new Map();
 const stateTimeouts = new Map();
 
-// Logger sederhana
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
   error: (msg) => console.log(`[ERROR] ${msg}`),
@@ -37,7 +34,6 @@ function getUA() {
   return CONFIG.USER_AGENTS[Math.floor(Math.random() * CONFIG.USER_AGENTS.length)];
 }
 
-// ✅ State management dengan TTL (anti memory leak)
 function setUserState(userId, state) {
   if (stateTimeouts.has(userId)) {
     clearTimeout(stateTimeouts.get(userId));
@@ -86,7 +82,6 @@ function delay(ms, withJitter = false) {
   return new Promise(resolve => setTimeout(resolve, actualDelay));
 }
 
-// ✅ Validasi URL download (optional, tetap return false kalau gagal)
 async function isUrlAlive(url) {
   try {
     const res = await axios.head(url, { 
@@ -101,7 +96,43 @@ async function isUrlAlive(url) {
   }
 }
 
-// Fungsi utama konversi dengan retry mechanism (MP3 & MP4)
+async function checkApiStatus() {
+  const apis = [
+    { name: 'YTMP3 API (a.ymcdn.org)', url: 'https://a.ymcdn.org/api/v1/init', params: { p: 'y', '23': '1llum1n471', _: Date.now() } },
+    { name: 'NoEmbed API', url: 'https://noembed.com/embed', params: { url: 'https://youtube.com/watch?v=dQw4w9WgXcQ' } }
+  ];
+  
+  const results = [];
+  
+  for (const api of apis) {
+    try {
+      const startTime = Date.now();
+      const response = await axios.get(api.url, { 
+        params: api.params,
+        timeout: 10000,
+        headers: { 'User-Agent': getUA() }
+      });
+      const responseTime = Date.now() - startTime;
+      
+      results.push({
+        name: api.name,
+        status: 'online',
+        statusCode: response.status,
+        responseTime: `${responseTime}ms`
+      });
+    } catch (err) {
+      results.push({
+        name: api.name,
+        status: 'offline',
+        error: err.message,
+        statusCode: err.response?.status || 'N/A'
+      });
+    }
+  }
+  
+  return results;
+}
+
 async function ytmp(url, format = 'mp3', retryCount = 0) {
   log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/${CONFIG.MAX_RETRIES}`);
   
@@ -170,7 +201,6 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       throw new Error(`[Convert] ${convert.data.error}`);
     }
 
-    // Cek apakah langsung dapat download URL
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
       log.debug('[Step 2] Got direct download URL');
       await delay(1500, true);
@@ -178,7 +208,6 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       const title = await getVideoTitle(url);
       const downloadUrl = convert.data.downloadURL;
       
-      // ✅ Tetap return walau validasi gagal
       const isValid = await isUrlAlive(downloadUrl);
       
       return { 
@@ -190,7 +219,6 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       };
     }
 
-    // Step 3: Polling progress
     if (convert.data.progressURL) {
       log.debug('[Step 3] Starting polling...');
       let polls = 0;
@@ -221,7 +249,6 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
             const title = await getVideoTitle(url);
             const downloadUrl = progressData.downloadURL;
             
-            // ✅ Tetap return walau validasi gagal
             const isValid = await isUrlAlive(downloadUrl);
             
             return { 
@@ -289,10 +316,8 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
   }
 }
 
-// Inisialisasi bot dengan token dari environment variable
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Rate limit middleware
 bot.use(async (ctx, next) => {
   const start = Date.now();
   await next();
@@ -301,7 +326,6 @@ bot.use(async (ctx, next) => {
   await delay(CONFIG.RATE_LIMIT_DELAY);
 });
 
-// Command /start
 bot.start((ctx) => {
   const welcomeMessage = `
 🎬 *YouTube Downloader Bot* 🎬
@@ -334,7 +358,6 @@ Kirim link YouTube sekarang! 🚀
   ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
 });
 
-// Command /help
 bot.help((ctx) => {
   ctx.reply(
     '📖 *Bantuan*\n\n' +
@@ -349,12 +372,12 @@ bot.help((ctx) => {
     '*Perintah:*\n' +
     '/start - Mulai bot\n' +
     '/help - Bantuan\n' +
-    '/status - Cek status proses',
+    '/status - Cek status proses\n' +
+    '/ping - Cek status API online/mati',
     { parse_mode: 'Markdown' }
   );
 });
 
-// Command /status
 bot.command('status', (ctx) => {
   const userId = ctx.from.id;
   const state = userStates.get(userId);
@@ -366,7 +389,38 @@ bot.command('status', (ctx) => {
   }
 });
 
-// Handler untuk pesan teks (link YouTube)
+bot.command('ping', async (ctx) => {
+  const statusMsg = await ctx.reply('🏓 *Mengecek status API...*', { parse_mode: 'Markdown' });
+  
+  try {
+    const apiStatus = await checkApiStatus();
+    
+    let statusText = '🏓 *Status API*\n\n';
+    
+    for (const api of apiStatus) {
+      if (api.status === 'online') {
+        statusText += `✅ *${api.name}*\n`;
+        statusText += `   Status: ONLINE\n`;
+        statusText += `   Response: ${api.responseTime}\n`;
+        statusText += `   HTTP: ${api.statusCode}\n\n`;
+      } else {
+        statusText += `❌ *${api.name}*\n`;
+        statusText += `   Status: OFFLINE\n`;
+        statusText += `   Error: ${api.error}\n`;
+        statusText += `   HTTP: ${api.statusCode}\n\n`;
+      }
+    }
+    
+    const allOnline = apiStatus.every(api => api.status === 'online');
+    statusText += allOnline ? '✨ *Semua API dalam keadaan baik*' : '⚠️ *Beberapa API sedang bermasalah*';
+    
+    await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, null, statusText, { parse_mode: 'Markdown' });
+  } catch (err) {
+    log.error(`Ping command error: ${err.message}`);
+    await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, null, '❌ Gagal mengecek status API. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+});
+
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const messageText = ctx.message.text.trim();
@@ -400,7 +454,6 @@ bot.on('text', async (ctx) => {
   );
 });
 
-// Handler untuk pilihan format
 bot.action('format_mp3', async (ctx) => {
   await processFormat(ctx, 'mp3');
 });
@@ -415,7 +468,6 @@ bot.action('format_cancel', async (ctx) => {
   await ctx.editMessageText('❌ Proses dibatalkan.');
 });
 
-// Fungsi proses format
 async function processFormat(ctx, format) {
   const userId = ctx.from.id;
   const state = userStates.get(userId);
@@ -483,18 +535,17 @@ async function processFormat(ctx, format) {
     const emoji = format === 'mp3' ? '🎵' : '🎬';
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
     
-    // ✅ Warning kalau link tidak valid
     const warningText = result.warning ? `\n${result.warning}\n` : '';
     
     const successMessage = 
-      `${emoji} *Konversi Berhasil!*\n\n` +
+      `${emoji} *Konversi Berhasil!\n\n` +
       `📝 *Judul:* ${title}\n` +
       `📁 *File:* ${filename}\n` +
       `🎚️ *Format:* ${typeText}\n\n` +
       `🔗 *Link Download:*\n` +
       `[Klik di sini untuk download](${result.downloadUrl})\n` +
       warningText +
-      `\n⚠️ *PENTING - BACA!*\n` +
+      `\n⚠️ *PENTING - BACA!\n` +
       `• Link bisa expired dalam hitungan menit\n` +
       `• Error "code: 2-1" = link sudah mati\n` +
       `• Kalau gagal, kirim ulang link YouTube`;
@@ -527,13 +578,11 @@ async function processFormat(ctx, format) {
   }
 }
 
-// Error handler
 bot.catch((err, ctx) => {
   log.error(`[Bot] Error: ${err}`);
   ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {});
 });
 
-// Vercel serverless handler
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
@@ -548,7 +597,6 @@ module.exports = async (req, res) => {
   }
 };
 
-// Untuk development local
 if (require.main === module) {
   log.info('Starting bot in polling mode...');
   bot.launch();
