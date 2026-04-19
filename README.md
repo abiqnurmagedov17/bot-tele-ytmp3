@@ -1,4 +1,3 @@
----
 
 ## 🛠️ Teknologi yang Digunakan
 
