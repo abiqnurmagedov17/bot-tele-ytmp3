@@ -10,6 +10,7 @@
  * - In-memory caching
  * - Environment config validation
  * - User-friendly error handling
+ * - NEW: /limit command untuk cek kuota download
  */
 
 require('dotenv').config();
@@ -46,8 +47,8 @@ const config = {
 };
 
 if (!config.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN environment variable is required!');
-  process.exit(1);}
+  console.error('❌ BOT_TOKEN environment variable is required!');  process.exit(1);
+}
 
 // ═══════════════════════════════════════════════════════════
 // 🪵 LOGGER (Pino with console fallback)
@@ -95,8 +96,8 @@ function delay(ms, withJitter = false) {
 
 function sanitizeFilename(name) {
   if (!name) return `audio_${Date.now()}`;
-  const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);
-  return clean || `file_${Date.now()}`;}
+  const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);  return clean || `file_${Date.now()}`;
+}
 
 function isValidYouTubeUrl(url) {
   const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;
@@ -144,8 +145,8 @@ async function isUrlAlive(url) {
 // ═══════════════════════════════════════════════════════════
 
 async function retryWithBackoff(fn, maxRetries = config.MAX_RETRIES, baseDelay = 1000) {
-  let lastError;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+  let lastError;  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err) {
@@ -193,8 +194,8 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-site',
     'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'
-  };
+    'Pragma': 'no-cache'  };
+
   const client = wrapper(axios.create({
     jar,
     timeout: config.TIMEOUT,
@@ -242,8 +243,8 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
   }
 
   // Step 3: Polling for progress
-  if (convert.data.progressURL) {
-    logger.debug('[Step 3] Starting polling...');    let polls = 0;
+  if (convert.data.progressURL) {    logger.debug('[Step 3] Starting polling...');
+    let polls = 0;
     let lastProgress = -1;
     
     while (polls < config.MAX_POLLS) {
@@ -291,8 +292,8 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
         if (err.response?.status === 404 && convert.data.downloadURL && convert.data.downloadURL !== '#') {
           await delay(1000, true);
           const title = await getVideoTitle(url);
-          const downloadUrl = convert.data.downloadURL;
-          const isValid = await isUrlAlive(downloadUrl);          
+          const downloadUrl = convert.data.downloadURL;          const isValid = await isUrlAlive(downloadUrl);
+          
           return { 
             downloadUrl, 
             title, 
@@ -340,8 +341,8 @@ async function checkApiStatus() {
   
   const results = [];
   
-  for (const api of apis) {
-    try {      const startTime = Date.now();
+  for (const api of apis) {    try {
+      const startTime = Date.now();
       const response = await axios.get(api.url, { 
         params: api.params,
         timeout: 10000,
@@ -389,8 +390,8 @@ function getUserFriendlyError(err) {
     if (key !== 'default' && msg.includes(key.toLowerCase())) {
       return value;
     }
-  }
-  return ERROR_MESSAGES.default;}
+  }  return ERROR_MESSAGES.default;
+}
 
 // ═══════════════════════════════════════════════════════════
 // 🤖 BOT INITIALIZATION
@@ -438,8 +439,8 @@ bot.use(async (ctx, next) => {
 // ═══════════════════════════════════════════════════════════
 
 bot.start((ctx) => {
-  const welcomeMessage = `
-🎬 *YouTube Downloader Bot* 🎬
+  const welcomeMessage = `🎬 *YouTube Downloader Bot* 🎬
+
 Halo ${ctx.from.first_name || 'Kak'}!
 
 Kirimkan link YouTube, lalu pilih format:
@@ -483,12 +484,13 @@ bot.help((ctx) => {
     '/help - Bantuan\n' +
     '/status - Cek status proses\n' +
     '/ping - Cek status API\n' +
-    '/health - Health check bot',
+    '/health - Health check bot\n' +
+    '/limit - Cek kuota download kamu',
     { parse_mode: 'Markdown' }
   );
 });
-
-bot.command('status', (ctx) => {  const userId = ctx.from.id;
+bot.command('status', (ctx) => {
+  const userId = ctx.from.id;
   const state = userStates.get(userId);
   
   if (state) {
@@ -535,9 +537,9 @@ bot.command('health', async (ctx) => {
     status: 'ok',
     uptime: `${Math.floor(process.uptime())}s`,
     memory: {
-      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
-      heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
-    },    activeUsers: userStates.keys().length,
+      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,      heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+    },
+    activeUsers: userStates.keys().length,
     cacheStats: conversionCache.getStats(),
     timestamp: new Date().toISOString()
   };
@@ -545,6 +547,51 @@ bot.command('health', async (ctx) => {
   ctx.reply(`📊 *Health Check*\n\`\`\`json\n${JSON.stringify(health, null, 2)}\`\`\``, { 
     parse_mode: 'Markdown' 
   });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 📊 LIMIT / QUOTA CHECK COMMAND (NEW!)
+// ═══════════════════════════════════════════════════════════
+
+bot.command('limit', async (ctx) => {
+  const userId = ctx.from.id;
+  const userName = ctx.from.username || ctx.from.first_name || 'User';
+  const now = Date.now();
+  
+  // Ambil data rate limit user
+  const userLimit = rateLimits.get(userId) || { count: 0, resetAt: now + config.RATE_LIMIT_WINDOW };
+  
+  // Hitung sisa & waktu reset
+  const remaining = Math.max(0, config.RATE_LIMIT_MAX - userLimit.count);
+  const resetInSec = Math.max(0, Math.ceil((userLimit.resetAt - now) / 1000));
+  const resetInMin = Math.ceil(resetInSec / 60);
+  
+  // Format pesan
+  let limitText = `📊 *Limit Usage*\n\n`;
+  limitText += `👤 *User:* @${userName}\n`;
+  limitText += `🔄 *Used:* ${userLimit.count}/${config.RATE_LIMIT_MAX} requests\n`;
+  limitText += `✅ *Remaining:* ${remaining} request${remaining !== 1 ? 's' : ''}\n`;
+  limitText += `⏱️ *Window:* ${config.RATE_LIMIT_WINDOW / 1000} seconds\n`;
+  
+  if (remaining === 0) {
+    limitText += `\n🚦 *Status:* RATE LIMITED\n`;
+    limitText += `⏳ Reset dalam: ${resetInSec}s\n\n`;
+    limitText += `💡 *Tips:* Tunggu sebentar atau coba lagi nanti!`;
+  } else {
+    limitText += `\n✨ *Status:* ACTIVE\n`;
+    limitText += `🔁 *Resets in:* ${resetInSec}s (~${resetInMin}m)\n\n`;
+    limitText += `💡 *Tips:* Limit reset otomatis setiap menit!`;
+  }
+  
+  // Tambahkan info cache (bonus)
+  const cacheKey = ctx.message?.text?.match(/https?:\/\/[^\s]+/)?.[0];
+  if (cacheKey && isValidYouTubeUrl(cacheKey)) {
+    const cacheHit = conversionCache.get(`${cacheKey}_mp3`) || conversionCache.get(`${cacheKey}_mp4`);    if (cacheHit) {
+      limitText += `\n\n⚡ *Bonus:* Video ini ada di cache! Download lebih cepat 🚀`;
+    }
+  }
+  
+  await ctx.reply(limitText, { parse_mode: 'Markdown' });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -587,8 +634,8 @@ bot.on('text', async (ctx) => {
 // ═══════════════════════════════════════════════════════════
 // ⚡ CALLBACK QUERY HANDLERS
 // ═══════════════════════════════════════════════════════════
-bot.action('format_mp3', async (ctx) => {
-  await processFormat(ctx, 'mp3');
+
+bot.action('format_mp3', async (ctx) => {  await processFormat(ctx, 'mp3');
 });
 
 bot.action('format_mp4', async (ctx) => {
@@ -635,9 +682,9 @@ async function processFormat(ctx, format) {
     
     // Real conversion with progress callback
     const result = await ytmp(url, format, (progress) => {
-      ctx.telegram.editMessageText(        ctx.chat.id,
-        loadingMsg.message_id,
-        null,
+      ctx.telegram.editMessageText(
+        ctx.chat.id,
+        loadingMsg.message_id,        null,
         `🔄 Progress: ${progress}%`
       ).catch(() => {}); // Ignore if message already edited
     });
@@ -684,9 +731,9 @@ async function processFormat(ctx, format) {
   } catch (err) {
     logger.error({ userId, url, format, error: err.message }, 'Conversion failed');
     
-    const errorMessage = getUserFriendlyError(err);    await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
-    
-  } finally {
+    const errorMessage = getUserFriendlyError(err);
+    await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
+      } finally {
     userStates.del(userId);
   }
 }
@@ -733,9 +780,9 @@ if (require.main === module) {
   
   bot.launch().then(() => {
     logger.info('✅ Bot is ready!');
-  }).catch(err => {    logger.error({ error: err.message }, 'Failed to launch bot');
-    process.exit(1);
-  });
+  }).catch(err => {
+    logger.error({ error: err.message }, 'Failed to launch bot');
+    process.exit(1);  });
   
   // Graceful shutdown
   const shutdown = (signal) => {
