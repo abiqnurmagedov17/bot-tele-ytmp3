@@ -178,7 +178,6 @@ Jika Anda ingin meningkatkan bot ini, silakan:
 
 - [ ] Support playlist YouTube
 - [ ] Custom quality selector (144p, 360p, 720p, 1080p)
-- [ ] Upload langsung ke Telegram (bukan link)
 - [ ] Multi-language support
 - [ ] Admin panel untuk monitoring
 
@@ -208,7 +207,6 @@ Punya pertanyaan atau kendala? Hubungi melalui:
 - 🎵 Download MP3 dari YouTube
 - 🎬 Download MP4 dari YouTube
 - ⚡ Webhook support untuk Vercel
-- 📱 Support YouTube Shorts
 
 ---
 
