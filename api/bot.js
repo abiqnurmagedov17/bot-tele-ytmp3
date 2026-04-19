@@ -21,7 +21,7 @@ const CONFIG = {
 
 const userStates = new Map();
 const stateTimeouts = new Map();
-const rateLimits = new Map(); // ➕ Baru: untuk /limit command
+const rateLimits = new Map();
 
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
@@ -47,7 +47,8 @@ function setUserState(userId, state) {
     stateTimeouts.delete(userId);
   }, CONFIG.STATE_TTL);
   
-  stateTimeouts.set(userId, timeout);}
+  stateTimeouts.set(userId, timeout);
+}
 
 function deleteUserState(userId) {
   if (stateTimeouts.has(userId)) {
@@ -81,7 +82,6 @@ function delay(ms, withJitter = false) {
   return new Promise(resolve => setTimeout(resolve, actualDelay));
 }
 
-// 🔥 FIX: NO MORE VALIDATION. DAPET URL -> LANGSUNG OPER KE USER.
 async function ytmp(url, format = 'mp3', retryCount = 0) {
   log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/${CONFIG.MAX_RETRIES}`);
   
@@ -96,7 +96,8 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
     const headers = {
       'User-Agent': currentUA,
       'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
       'Referer': 'https://id.ytmp3.mobi/v1/',
       'Origin': 'https://id.ytmp3.mobi',
@@ -145,10 +146,10 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
     
     log.debug(`[Step 2] Convert response: ${JSON.stringify(convert.data).substring(0, 200)}...`);
     
-    if (convert.data.error && convert.data.error !== 'in_progress') {      throw new Error(`[Convert] ${convert.data.error}`);
+    if (convert.data.error && convert.data.error !== 'in_progress') {
+      throw new Error(`[Convert] ${convert.data.error}`);
     }
 
-    // 🔥 DAPET URL -> LANGSUNG LEMPAR, JANGAN DIUTAK-ATIK LAGI!
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
       log.debug('[Step 2] Got direct download URL! Giving it to user untouched.');
       const title = await getVideoTitle(url);
@@ -172,7 +173,6 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
           
           const progressData = prog.data;
           
-          // 🔥 DAPET URL -> LANGSUNG LEMPAR!
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
             log.debug('[Step 3] Got download URL from polling! Giving it to user untouched.');
             const title = await getVideoTitle(url);
@@ -194,7 +194,8 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
           }
           
           await delay(500, true);
-        }        
+        }
+        
         await delay(CONFIG.POLL_INTERVAL, true);
       }
       
@@ -224,10 +225,6 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// ➕ NEW: API Status Checker (untuk /ping)
-// ═══════════════════════════════════════════════════════════
-
 async function checkApiStatus() {
   const apis = [
     { name: 'YTMP3 API', url: 'https://a.ymcdn.org/api/v1/init', params: { p: 'y', '23': '1llum1n471', _: Date.now() } },
@@ -243,13 +240,10 @@ async function checkApiStatus() {
       results.push({ name: api.name, status: 'online', responseTime: `${Date.now() - start}ms`, statusCode: res.status });
     } catch (err) {
       results.push({ name: api.name, status: 'offline', error: err.message, statusCode: err.response?.status || 'N/A' });
-    }  }
+    }
+  }
   return results;
 }
-
-// ═══════════════════════════════════════════════════════════
-// ➕ NEW: Bot Initialization + Middleware
-// ═══════════════════════════════════════════════════════════
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -257,7 +251,6 @@ bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
   const start = Date.now();
   
-  // ➕ Rate limiting untuk /limit command
   if (userId) {
     const now = Date.now();
     const limit = rateLimits.get(userId) || { count: 0, resetAt: now + 60000 };
@@ -293,6 +286,7 @@ Kirimkan link YouTube, lalu pilih format:
 ━━━━━━━━━━━━━━━━━━━━
 👤 *Owner Bot:* Abiq Nurmagedov
 📦 *GitHub:* github.com/abiqnurmagedov17
+
 ⚠️ *Note:*
 Bot ini menggunakan API pihak ketiga 
 hasil scraping dan bisa mati sewaktu-waktu.
@@ -301,6 +295,7 @@ Gunakan dengan bijak!
 
 Kirim link YouTube sekarang! 🚀
   `;
+  
   ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
 });
 
@@ -330,6 +325,7 @@ bot.help((ctx) => {
 bot.command('status', (ctx) => {
   const userId = ctx.from.id;
   const state = userStates.get(userId);
+  
   if (state) {
     ctx.reply(`⏳ Sedang memproses: ${state.url} (${state.format || 'mp3'})`);
   } else {
@@ -337,11 +333,8 @@ bot.command('status', (ctx) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════
-// ➕ NEW COMMANDS
-// ═══════════════════════════════════════════════════════════
-
-bot.command('ping', async (ctx) => {  const msg = await ctx.reply('🏓 *Mengecek API...*', { parse_mode: 'Markdown' });
+bot.command('ping', async (ctx) => {
+  const msg = await ctx.reply('🏓 *Mengecek API...*', { parse_mode: 'Markdown' });
   try {
     const apis = await checkApiStatus();
     let text = '🏓 *Status API*\n\n';
@@ -390,7 +383,8 @@ bot.command('limit', async (ctx) => {
   text += `⏱️ *Reset in:* ${resetIn}s\n\n`;
   text += remaining > 0 ? `✨ *Status:* ACTIVE` : `🚦 *Status:* RATE LIMITED\n⏳ Tunggu ${resetIn}s`;
   
-  ctx.reply(text, { parse_mode: 'Markdown' });});
+  ctx.reply(text, { parse_mode: 'Markdown' });
+});
 
 bot.command('retry', async (ctx) => {
   const userId = ctx.from.id;
@@ -401,16 +395,12 @@ bot.command('retry', async (ctx) => {
   setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
   ctx.reply('🔄 *Link di-refresh!* Pilih format:\n\n`' + state.url + '`', {
     parse_mode: 'Markdown',
-    reply_markup: Markup.inlineKeyboard([
+    ...Markup.inlineKeyboard([
       [Markup.button.callback('🎵 MP3', 'format_mp3'), Markup.button.callback('🎬 MP4', 'format_mp4')],
       [Markup.button.callback('❌ Batal', 'format_cancel')]
-    ]).reply_markup
+    ])
   });
 });
-
-// ═══════════════════════════════════════════════════════════
-// ➕ MESSAGE & CALLBACK HANDLERS (Original + Small Fix)
-// ═══════════════════════════════════════════════════════════
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
@@ -440,6 +430,7 @@ bot.on('text', async (ctx) => {
     ])
   );
 });
+
 bot.action('format_mp3', async (ctx) => { await processFormat(ctx, 'mp3'); });
 bot.action('format_mp4', async (ctx) => { await processFormat(ctx, 'mp4'); });
 
@@ -488,23 +479,32 @@ async function processFormat(ctx, format) {
     const filename = sanitizeFilename(title) + extension;
     const emoji = format === 'mp3' ? '🎵' : '🎬';
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
-        const successMessage = 
+    
+    const successMessage = 
       `${emoji} *Konversi Berhasil!*\n\n` +
       `📝 *Judul:* ${title}\n` +
       `📁 *File:* ${filename}\n` +
       `🎚️ *Format:* ${typeText}\n\n` +
-      `🔗 *Link Download:*\n` +
-      `\`${result.downloadUrl}\`\n\n` +
+      `🔽 *Klik tombol di bawah untuk download:*`;
+    
+    // 🔥 BUTTON DOWNLOAD + URL TEXT (fallback)
+    await ctx.reply(successMessage, {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.url('🔗 DOWNLOAD SEKARANG', result.downloadUrl)],
+        [Markup.button.callback('📋 Copy Link Manual', `copy_${Date.now()}`)]
+      ])
+    });
+    
+    // Kirim URL sebagai teks terpisah untuk copy manual
+    await ctx.reply(
+      `📋 *Link Download (Copy Manual):*\n\`${result.downloadUrl}\`\n\n` +
       `⚠️ *PENTING!*\n` +
       `• Link hanya sekali pakai & cepat expired!\n` +
-      `• JANGAN dibuka dulu kalau belum siap download!\n` +
-      `• Copy link-nya, jangan diklik langsung dari chat!\n` +
-      `• Kalau error, link sudah mati. Kirim ulang URL.`;
-    
-    await ctx.reply(successMessage, { 
-      parse_mode: 'Markdown', 
-      disable_web_page_preview: true
-    });
+      `• JANGAN dibuka kalau belum siap download!\n` +
+      `• Kalau error, link sudah mati. Kirim ulang URL.`,
+      { parse_mode: 'Markdown', disable_web_page_preview: true }
+    );
     
   } catch (err) {
     log.error(`[User ${userId}] Error: ${err.message}`);
@@ -526,18 +526,20 @@ async function processFormat(ctx, format) {
   }
 }
 
+// Handler untuk tombol copy (optional, bisa dikembangkan)
+bot.action(/^copy_/, async (ctx) => {
+  await ctx.answerCbQuery('📋 Copy link dari pesan di atas ya!');
+});
+
 bot.catch((err, ctx) => {
   log.error(`[Bot] Error: ${err}`);
   ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {});
 });
 
-// ═══════════════════════════════════════════════════════════
-// ➕ EXPORT & LAUNCH (Original)
-// ═══════════════════════════════════════════════════════════
-
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
-    try {      await bot.handleUpdate(req.body);
+    try {
+      await bot.handleUpdate(req.body);
       res.status(200).send('OK');
     } catch (err) {
       log.error(`[Webhook] Error: ${err}`);
