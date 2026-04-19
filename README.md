@@ -1,58 +1,3 @@
-# 🎬 YouTube Downloader Bot
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/abiqnurmagedov17/bot-tele-ytmp3)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-brightgreen)](https://nodejs.org/)
-
-> Bot Telegram untuk mendownload video YouTube dalam format **MP3** (Audio) dan **MP4** (Video) secara gratis, cepat, dan tanpa batasan durasi.
-
----
-
-## ✨ Fitur
-
-- 🎵 **Download Audio** — Konversi YouTube ke MP3 dengan kualitas terbaik
-- 🎬 **Download Video** — Simpan video YouTube dalam format MP4
-- ⚡ **Proses Cepat** — Tanpa antrian, konversi 00-05 detik
-- 🔗 **Link Langsung** — File siap download tanpa redirect
-- 🆓 **100% Gratis** — Tanpa batasan durasi atau watermark
-- 📱 **YouTube Shorts Support** — Download Shorts dengan mudah
-
----
-
-## 🚀 Cara Penggunaan
-
-1. **Mulai Bot**  
-   Cari `@yetemp3down_bot` di Telegram atau klik [di sini](https://t.me/yetemp3down_bot)
-
-2. **Kirim Link YouTube**  
-   Paste link video YouTube yang ingin didownload
-
-3. **Pilih Format**  
-   Pilih antara **MP3** (audio) atau **MP4** (video)
-
-4. **Tunggu Proses**  
-   Bot akan memproses permintaan (estimasi: 15-45 detik)
-
-5. **Download File**  
-   Klik link yang diberikan untuk mengunduh file
-
-### 🔗 Format Link yang Didukung
-
-```text
-https://youtube.com/watch?v=xxxxx
-https://youtu.be/xxxxx
-https://youtube.com/shorts/xxxxx
-https://m.youtube.com/watch?v=xxxxx
-```
-
-### 📋 Daftar Perintah
-
-| Command | Deskripsi ||---------|-----------|
-| `/start` | Memulai bot dan menampilkan pesan selamat datang |
-| `/help` | Menampilkan panduan penggunaan lengkap |
-| `/status` | Mengecek status proses konversi yang sedang berjalan |
-| `/ping` | Mengecek koneksi bot (opsional) |
-
 ---
 
 ## 🛠️ Teknologi yang Digunakan
@@ -62,6 +7,8 @@ https://m.youtube.com/watch?v=xxxxx
 | [Node.js](https://nodejs.org/) | JavaScript runtime environment |
 | [Telegraf](https://telegraf.js.org/) | Framework bot Telegram modern |
 | [Axios](https://axios-http.com/) | HTTP client untuk request API |
+| [NodeCache](https://www.npmjs.com/package/node-cache) | In-memory caching untuk performa |
+| [Pino](https://getpino.io/) | Structured logging yang performant |
 | [Vercel](https://vercel.com/) | Platform serverless hosting |
 | [ytmp3.mobi API](https://ytmp3.mobi/) | Third-party scraping API |
 
@@ -80,35 +27,86 @@ https://m.youtube.com/watch?v=xxxxx
 
 1. **Clone Repository**
 ```bash
-   git clone https://github.com/abiqnurmagedov17/bot-tele-ytmp3.git
-   cd bot-tele-ytmp3
+git clone https://github.com/abiqnurmagedov17/bot-tele-ytmp3.git
+cd bot-tele-ytmp3
 ```
 
 2. **Install Dependencies**
 ```bash
-   npm install
+npm install
 ```
 
 3. **Install Vercel CLI (Opsional)**
 ```bash
-   npm install -g vercel
+npm install -g vercel
 ```
 
 4. **Deploy ke Vercel**
 ```bash
-   vercel```
-   > Atau deploy langsung via dashboard Vercel dengan menghubungkan repository GitHub.
+vercel
+```
+> Atau deploy langsung via dashboard Vercel dengan menghubungkan repository GitHub.
 
 5. **Konfigurasi Environment Variables**
    
    Buat file `.env` atau set via Vercel Dashboard:
+
 ```env
-   BOT_TOKEN=your_telegram_bot_token_here
+# ─────────────────────────────
+# 🤖 Telegram Bot
+# ─────────────────────────────
+BOT_TOKEN=your_telegram_bot_token_here
+
+# ─────────────────────────────
+# ⚙️ Performance & Limits
+# ─────────────────────────────
+TIMEOUT=30000
+MAX_POLLS=50
+POLL_INTERVAL=2000
+MAX_RETRIES=3
+
+# Rate limiting (per user)
+RATE_LIMIT_WINDOW=60000
+RATE_LIMIT_MAX=10
+
+# Cache & State TTL (dalam detik)
+STATE_TTL=120
+CACHE_TTL=600
+
+# ─────────────────────────────
+# 🪵 Logging
+# ─────────────────────────────
+LOG_LEVEL=info
+# Options: fatal, error, warn, info, debug, trace, silent
 ```
 
 6. **Setup Webhook Telegram**
 ```bash
-   curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=https://your-vercel-app.vercel.app/api/bot"
+curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=https://your-vercel-app.vercel.app/api/bot"
+```
+
+### 🔧 File Konfigurasi Tambahan
+
+**`vercel.json`** (opsional, untuk custom config):
+```json
+{
+  "functions": {
+    "api/bot.js": {
+      "maxDuration": 60
+    }
+  },
+  "regions": ["sin1"]
+}
+```
+
+**`.gitignore`**:
+```gitignore
+node_modules/
+.env
+.env.local
+logs/
+*.log
+.DS_Store
 ```
 
 ---
@@ -123,6 +121,25 @@ https://m.youtube.com/watch?v=xxxxx
 - 🔧 Kerusakan, error, atau masalah teknis yang timbul dari penggunaan bot
 
 💡 **Saran:** Gunakan hanya untuk konten yang Anda miliki atau konten berlisensi publik/Creative Commons.
+
+---
+
+## ❓ FAQ
+
+### Q: Kenapa download gagal dengan error "code: 2-1"?
+**A:** Link download dari API sudah expired. Coba kirim ulang link YouTube-nya.
+
+### Q: Berapa lama proses konversi?
+**A:** Rata-rata 15-45 detik, tergantung durasi video dan beban server API.
+
+### Q: Apa arti `/limit` menunjukkan "RATE LIMITED"?
+**A:** Kamu sudah mencapai batas 10 request/menit. Tunggu ~60 detik untuk reset otomatis.
+
+### Q: Bisa download video privat/unlisted?
+**A:** Tidak. Bot hanya bisa mendownload video yang publicly accessible.
+
+### Q: Kenapa bot kadang lambat?
+**A:** Bisa karena: (1) API pihak ketiga sedang sibuk, (2) Cold start Vercel, atau (3) Video durasi panjang.
 
 ---
 
@@ -145,6 +162,7 @@ Silakan gunakan, modifikasi, dan distribusikan sesuai ketentuan lisensi.
 
 Kontribusi sangat diterima! 🎉  
 Jika Anda ingin meningkatkan bot ini, silakan:
+
 1. Fork repository ini
 2. Buat branch fitur baru (`git checkout -b fitur/nama-fitur`)
 3. Commit perubahan (`git commit -m 'feat: menambahkan fitur X'`)
@@ -155,6 +173,15 @@ Jika Anda ingin meningkatkan bot ini, silakan:
 
 - Gunakan [GitHub Issues](https://github.com/abiqnurmagedov17/bot-tele-ytmp3/issues)
 - Jelaskan secara detail: langkah reproduksi, expected vs actual result
+- Lampirkan log error jika ada (dari `/health` atau console)
+
+### 💡 Ide Fitur yang Bisa Dikembangkan
+
+- [ ] Support playlist YouTube
+- [ ] Custom quality selector (144p, 360p, 720p, 1080p)
+- [ ] Upload langsung ke Telegram (bukan link)
+- [ ] Multi-language support
+- [ ] Admin panel untuk monitoring
 
 ---
 
@@ -164,6 +191,25 @@ Punya pertanyaan atau kendala? Hubungi melalui:
 
 - 💬 **Telegram**: [@abiqnurmagedov](https://t.me/abiqqqqqq)
 - 🐙 **GitHub Issues**: [Buka Issue Baru](https://github.com/abiqnurmagedov17/bot-tele-ytmp3/issues)
+- 📧 **Email**: abiq@rommiui.com
+
+---
+
+## 📈 Changelog
+
+### v1.1.0 (Latest)
+- ✨ Tambah command `/limit` untuk cek kuota download
+- ✨ Tambah command `/health` untuk monitoring bot
+- 🚀 Optimasi caching dengan NodeCache
+- 🪵 Structured logging dengan Pino
+- 🛡️ Rate limiting per-user yang lebih robust
+- 🔧 Exponential backoff retry logic
+
+### v1.0.0 (Initial Release)
+- 🎵 Download MP3 dari YouTube
+- 🎬 Download MP4 dari YouTube
+- ⚡ Webhook support untuk Vercel
+- 📱 Support YouTube Shorts
 
 ---
 
