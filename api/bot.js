@@ -173,9 +173,6 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
     'Origin': 'https://id.ytmp3.mobi',
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-site',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'
   };
 
   const client = wrapper(axios.create({
