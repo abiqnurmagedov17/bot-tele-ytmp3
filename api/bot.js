@@ -1,16 +1,14 @@
 /**
- * 🎬 YouTube Downloader Bot - Production Edition
+ * 🎬 YouTube Downloader Bot - Production Edition (Fixed)
  * Author: Abiq Nurmagedov
  * GitHub: github.com/abiqnurmagedov17
  * 
- * Features:
- * - Rate limiting & anti-spam
- * - Exponential backoff retry
- * - Structured logging
- * - In-memory caching
- * - Environment config validation
- * - User-friendly error handling
- * - NEW: /limit command untuk cek kuota download
+ * FIXES:
+ * - ✅ HAPUS caching download URL (link one-time use)
+ * - ✅ HAPUS isUrlAlive() (memicu invalidasi link server)
+ * - ✅ Setiap request selalu generate link BARU
+ * - ✅ Tambah /retry command untuk refresh link
+ * - ✅ Warning jelas: link 1x use & expired cepat
  */
 
 require('dotenv').config();
@@ -34,7 +32,6 @@ const config = {
   RATE_LIMIT_WINDOW: parseInt(process.env.RATE_LIMIT_WINDOW) || 60000,
   RATE_LIMIT_MAX: parseInt(process.env.RATE_LIMIT_MAX) || 10,
   STATE_TTL: parseInt(process.env.STATE_TTL) || 120,
-  CACHE_TTL: parseInt(process.env.CACHE_TTL) || 600,
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -47,9 +44,9 @@ const config = {
 };
 
 if (!config.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN environment variable is required!');  process.exit(1);
+  console.error('❌ BOT_TOKEN environment variable is required!');
+  process.exit(1);
 }
-
 // ═══════════════════════════════════════════════════════════
 // 🪵 LOGGER (Pino with console fallback)
 // ═══════════════════════════════════════════════════════════
@@ -63,7 +60,6 @@ try {
     }
   });
 } catch {
-  // Fallback ke console jika pino-pretty tidak terinstall
   logger = {
     info: (msg, meta) => console.log(`[INFO] ${msg} ${meta ? JSON.stringify(meta) : ''}`),
     warn: (msg, meta) => console.warn(`[WARN] ${msg} ${meta ? JSON.stringify(meta) : ''}`),
@@ -74,11 +70,10 @@ try {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🗄️ CACHE & STATE MANAGEMENT
+// 🗄️ STATE MANAGEMENT (HANYA untuk user session)
 // ═══════════════════════════════════════════════════════════
 
 const userStates = new NodeCache({ stdTTL: config.STATE_TTL, checkperiod: 30 });
-const conversionCache = new NodeCache({ stdTTL: config.CACHE_TTL, checkperiod: 60 });
 const rateLimits = new Map();
 
 // ═══════════════════════════════════════════════════════════
@@ -96,12 +91,12 @@ function delay(ms, withJitter = false) {
 
 function sanitizeFilename(name) {
   if (!name) return `audio_${Date.now()}`;
-  const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);  return clean || `file_${Date.now()}`;
+  const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);
+  return clean || `file_${Date.now()}`;
 }
 
 function isValidYouTubeUrl(url) {
-  const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;
-  return regex.test(url);
+  const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;  return regex.test(url);
 }
 
 function extractVideoId(url) {
@@ -125,27 +120,13 @@ async function getVideoTitle(url) {
   }
 }
 
-async function isUrlAlive(url) {
-  try {
-    const res = await axios.head(url, { 
-      timeout: 5000,
-      maxRedirects: 3,
-      headers: { 'User-Agent': getUA() },
-      validateStatus: status => status < 400
-    });
-    return res.status === 200;
-  } catch (err) {
-    logger.debug({ url, error: err.message }, 'URL validation failed');
-    return false;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════
 // 🔄 RETRY LOGIC WITH EXPONENTIAL BACKOFF
 // ═══════════════════════════════════════════════════════════
 
 async function retryWithBackoff(fn, maxRetries = config.MAX_RETRIES, baseDelay = 1000) {
-  let lastError;  
+  let lastError;
+  
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await fn();
@@ -164,8 +145,7 @@ async function retryWithBackoff(fn, maxRetries = config.MAX_RETRIES, baseDelay =
       const totalDelay = exponentialDelay + jitter;
       
       logger.warn({ attempt: attempt + 1, maxRetries, delay: Math.round(totalDelay) }, 
-        `Retry after error: ${err.message}`);
-      await delay(totalDelay);
+        `Retry after error: ${err.message}`);      await delay(totalDelay);
     }
   }
   throw lastError;
@@ -173,6 +153,7 @@ async function retryWithBackoff(fn, maxRetries = config.MAX_RETRIES, baseDelay =
 
 // ═══════════════════════════════════════════════════════════
 // 🎯 YTMP SERVICE (Core Conversion Logic)
+// ⚠️ NO CACHE, NO isUrlAlive → Selalu generate link fresh
 // ═══════════════════════════════════════════════════════════
 
 async function ytmpInternal(url, format = 'mp3', onProgress) {
@@ -194,7 +175,8 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-site',
     'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'  };
+    'Pragma': 'no-cache'
+  };
 
   const client = wrapper(axios.create({
     jar,
@@ -213,7 +195,6 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
   if (!init.data.convertURL) throw new Error('[Init] Gagal inisialisasi - no convertURL');
   
   await delay(500, true);
-
   // Step 2: Send convert request
   logger.debug(`[Step 2] Sending convert request (${format})...`);
   const convert = await client.get(init.data.convertURL, {
@@ -230,20 +211,18 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
     await delay(1500, true);
     
     const title = await getVideoTitle(url);
-    const downloadUrl = convert.data.downloadURL;
-    const isValid = await isUrlAlive(downloadUrl);
     
     return { 
-      downloadUrl, 
+      downloadUrl: convert.data.downloadURL, 
       title, 
-      format, 
-      isValid,
-      warning: !isValid ? '⚠️ Link mungkin sudah expired, segera download!' : null
+      format,
+      warning: '⚠️ Link HANYA berlaku 1x download & expired dalam 1-2 menit!'
     };
   }
 
   // Step 3: Polling for progress
-  if (convert.data.progressURL) {    logger.debug('[Step 3] Starting polling...');
+  if (convert.data.progressURL) {
+    logger.debug('[Step 3] Starting polling...');
     let polls = 0;
     let lastProgress = -1;
     
@@ -257,7 +236,6 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
         
         const progressData = prog.data;
         
-        // Report progress if callback provided
         if (onProgress && progressData.progress !== lastProgress) {
           lastProgress = progressData.progress;
           onProgress(Math.min(90, 60 + progressData));
@@ -265,19 +243,15 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
         }
         
         if (progressData.downloadURL && progressData.downloadURL !== '#') {
-          logger.debug('[Step 3] Got download URL from polling');
-          await delay(1500, true);
+          logger.debug('[Step 3] Got download URL from polling');          await delay(1500, true);
           
           const title = await getVideoTitle(url);
-          const downloadUrl = progressData.downloadURL;
-          const isValid = await isUrlAlive(downloadUrl);
           
           return { 
-            downloadUrl, 
+            downloadUrl: progressData.downloadURL, 
             title, 
-            format, 
-            isValid,
-            warning: !isValid ? '⚠️ Link mungkin sudah expired, segera download!' : null
+            format,
+            warning: '⚠️ Link HANYA berlaku 1x download & expired dalam 1-2 menit!'
           };
         }
         
@@ -292,14 +266,11 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
         if (err.response?.status === 404 && convert.data.downloadURL && convert.data.downloadURL !== '#') {
           await delay(1000, true);
           const title = await getVideoTitle(url);
-          const downloadUrl = convert.data.downloadURL;          const isValid = await isUrlAlive(downloadUrl);
-          
           return { 
-            downloadUrl, 
+            downloadUrl: convert.data.downloadURL, 
             title, 
-            format, 
-            isValid,
-            warning: !isValid ? '⚠️ Link mungkin sudah expired, segera download!' : null
+            format,
+            warning: '⚠️ Link HANYA berlaku 1x download & expired dalam 1-2 menit!'
           };
         }
         await delay(1000, true);
@@ -314,25 +285,14 @@ async function ytmpInternal(url, format = 'mp3', onProgress) {
   throw new Error('[Convert] Gagal mendapatkan link download');
 }
 
-// Wrapper dengan caching
+// Wrapper: Langsung proses tanpa cache
 async function ytmp(url, format = 'mp3', onProgress) {
-  const cacheKey = `${url}_${format}`;
-  const cached = conversionCache.get(cacheKey);
-  
-  if (cached) {
-    logger.debug({ cacheKey }, 'Cache hit!');
-    return { ...cached, cached: true };
-  }
-  
-  const result = await retryWithBackoff(() => ytmpInternal(url, format, onProgress));
-  conversionCache.set(cacheKey, result);
-  return result;
+  return await retryWithBackoff(() => ytmpInternal(url, format, onProgress));
 }
 
 // ═══════════════════════════════════════════════════════════
 // 📊 API STATUS CHECKER
 // ═══════════════════════════════════════════════════════════
-
 async function checkApiStatus() {
   const apis = [
     { name: 'YTMP3 API (a.ymcdn.org)', url: 'https://a.ymcdn.org/api/v1/init', params: { p: 'y', '23': '1llum1n471', _: Date.now() } },
@@ -341,7 +301,8 @@ async function checkApiStatus() {
   
   const results = [];
   
-  for (const api of apis) {    try {
+  for (const api of apis) {
+    try {
       const startTime = Date.now();
       const response = await axios.get(api.url, { 
         params: api.params,
@@ -381,7 +342,6 @@ const ERROR_MESSAGES = {
   'konversi terlalu lama': '⏳ Proses terlalu lama, server mungkin overload',
   'default': '😅 Ada kendala teknis. Coba lagi atau lapor ke owner'
 };
-
 function getUserFriendlyError(err) {
   if (!err?.message) return ERROR_MESSAGES.default;
   const msg = err.message.toLowerCase();
@@ -390,7 +350,8 @@ function getUserFriendlyError(err) {
     if (key !== 'default' && msg.includes(key.toLowerCase())) {
       return value;
     }
-  }  return ERROR_MESSAGES.default;
+  }
+  return ERROR_MESSAGES.default;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -429,9 +390,7 @@ bot.use(async (ctx, next) => {
     logger.error({ userId, action, error: err.message }, 'Request failed');
     throw err;
   }
-  
-  // Small delay to prevent flooding
-  await delay(300);
+    await delay(300);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -480,15 +439,16 @@ bot.help((ctx) => {
     '• https://youtu.be/xxxxx\n' +
     '• https://youtube.com/shorts/xxxxx\n\n' +
     '*Perintah:*\n' +
-    '/start - Mulai bot\n' +
-    '/help - Bantuan\n' +
+    '/start - Mulai bot\n' +    '/help - Bantuan\n' +
     '/status - Cek status proses\n' +
     '/ping - Cek status API\n' +
     '/health - Health check bot\n' +
-    '/limit - Cek kuota download kamu',
+    '/limit - Cek kuota download kamu\n' +
+    '/retry - Generate link download baru',
     { parse_mode: 'Markdown' }
   );
 });
+
 bot.command('status', (ctx) => {
   const userId = ctx.from.id;
   const state = userStates.get(userId);
@@ -528,8 +488,7 @@ bot.command('ping', async (ctx) => {
     await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, null, statusText, { parse_mode: 'Markdown' });
   } catch (err) {
     logger.error({ error: err.message }, 'Ping command error');
-    await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, null, '❌ Gagal mengecek status API. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
-  }
+    await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, null, '❌ Gagal mengecek status API. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });  }
 });
 
 bot.command('health', async (ctx) => {
@@ -537,10 +496,10 @@ bot.command('health', async (ctx) => {
     status: 'ok',
     uptime: `${Math.floor(process.uptime())}s`,
     memory: {
-      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,      heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
+      heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
     },
     activeUsers: userStates.keys().length,
-    cacheStats: conversionCache.getStats(),
     timestamp: new Date().toISOString()
   };
   
@@ -549,24 +508,16 @@ bot.command('health', async (ctx) => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════
-// 📊 LIMIT / QUOTA CHECK COMMAND (NEW!)
-// ═══════════════════════════════════════════════════════════
-
 bot.command('limit', async (ctx) => {
   const userId = ctx.from.id;
   const userName = ctx.from.username || ctx.from.first_name || 'User';
   const now = Date.now();
   
-  // Ambil data rate limit user
   const userLimit = rateLimits.get(userId) || { count: 0, resetAt: now + config.RATE_LIMIT_WINDOW };
-  
-  // Hitung sisa & waktu reset
   const remaining = Math.max(0, config.RATE_LIMIT_MAX - userLimit.count);
   const resetInSec = Math.max(0, Math.ceil((userLimit.resetAt - now) / 1000));
   const resetInMin = Math.ceil(resetInSec / 60);
   
-  // Format pesan
   let limitText = `📊 *Limit Usage*\n\n`;
   limitText += `👤 *User:* @${userName}\n`;
   limitText += `🔄 *Used:* ${userLimit.count}/${config.RATE_LIMIT_MAX} requests\n`;
@@ -574,24 +525,34 @@ bot.command('limit', async (ctx) => {
   limitText += `⏱️ *Window:* ${config.RATE_LIMIT_WINDOW / 1000} seconds\n`;
   
   if (remaining === 0) {
-    limitText += `\n🚦 *Status:* RATE LIMITED\n`;
-    limitText += `⏳ Reset dalam: ${resetInSec}s\n\n`;
-    limitText += `💡 *Tips:* Tunggu sebentar atau coba lagi nanti!`;
+    limitText += `\n🚦 *Status:* RATE LIMITED\n⏳ Reset dalam: ${resetInSec}s\n\n💡 *Tips:* Tunggu sebentar atau coba lagi nanti!`;
   } else {
-    limitText += `\n✨ *Status:* ACTIVE\n`;
-    limitText += `🔁 *Resets in:* ${resetInSec}s (~${resetInMin}m)\n\n`;
-    limitText += `💡 *Tips:* Limit reset otomatis setiap menit!`;
-  }
-  
-  // Tambahkan info cache (bonus)
-  const cacheKey = ctx.message?.text?.match(/https?:\/\/[^\s]+/)?.[0];
-  if (cacheKey && isValidYouTubeUrl(cacheKey)) {
-    const cacheHit = conversionCache.get(`${cacheKey}_mp3`) || conversionCache.get(`${cacheKey}_mp4`);    if (cacheHit) {
-      limitText += `\n\n⚡ *Bonus:* Video ini ada di cache! Download lebih cepat 🚀`;
-    }
+    limitText += `\n✨ *Status:* ACTIVE\n🔁 *Resets in:* ${resetInSec}s (~${resetInMin}m)\n\n💡 *Tips:* Limit reset otomatis setiap menit!`;
   }
   
   await ctx.reply(limitText, { parse_mode: 'Markdown' });
+});
+
+bot.command('retry', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  
+  if (!state || !state.url) {    return ctx.reply('❌ Tidak ada proses sebelumnya.\n\nKirim link YouTube dulu untuk download.');
+  }
+  
+  // Reset state ke choose_format
+  userStates.set(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
+  
+  ctx.reply('🔄 *Link di-refresh!* Silakan pilih format:\n\n`' + state.url + '`', {
+    parse_mode: 'Markdown',
+    reply_markup: Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'),
+        Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')
+      ],
+      [Markup.button.callback('❌ Batal', 'format_cancel')]
+    ]).reply_markup
+  });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -602,21 +563,17 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const messageText = ctx.message.text.trim();
   
-  // Check if user has active process
   if (userStates.has(userId)) {
     ctx.reply('⏳ Mohon tunggu, proses sebelumnya masih berjalan...');
     return;
   }
   
-  // Validate YouTube URL
   if (!isValidYouTubeUrl(messageText)) {
     ctx.reply('❌ Mohon kirim link YouTube yang valid.\n\nContoh: https://youtube.com/watch?v=xxxxx');
     return;
   }
   
   const url = messageText;
-  
-  // Set user state
   userStates.set(userId, { url, step: 'choose_format', startTime: Date.now() });
   
   await ctx.reply(
@@ -630,17 +587,12 @@ bot.on('text', async (ctx) => {
     ])
   );
 });
-
 // ═══════════════════════════════════════════════════════════
 // ⚡ CALLBACK QUERY HANDLERS
 // ═══════════════════════════════════════════════════════════
 
-bot.action('format_mp3', async (ctx) => {  await processFormat(ctx, 'mp3');
-});
-
-bot.action('format_mp4', async (ctx) => {
-  await processFormat(ctx, 'mp4');
-});
+bot.action('format_mp3', async (ctx) => { await processFormat(ctx, 'mp3'); });
+bot.action('format_mp4', async (ctx) => { await processFormat(ctx, 'mp4'); });
 
 bot.action('format_cancel', async (ctx) => {
   const userId = ctx.from.id;
@@ -665,13 +617,10 @@ async function processFormat(ctx, format) {
   const url = state.url;
   const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
   
-  // Update state
   userStates.set(userId, { url, format, step: 'processing', startTime: Date.now() });
-  
   const loadingMsg = ctx.callbackQuery.message;
   
   try {
-    // Progress simulation with real updates
     await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, '🔍 Menganalisa link... (15%)');
     await delay(600);
     
@@ -680,16 +629,13 @@ async function processFormat(ctx, format) {
     
     await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, `🔄 Mengkonversi ke ${formatName}... (60%)`);
     
-    // Real conversion with progress callback
     const result = await ytmp(url, format, (progress) => {
       ctx.telegram.editMessageText(
-        ctx.chat.id,
-        loadingMsg.message_id,        null,
+        ctx.chat.id, loadingMsg.message_id, null,
         `🔄 Progress: ${progress}%`
-      ).catch(() => {}); // Ignore if message already edited
+      ).catch(() => {});
     });
-    
-    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, '✅ Finalisasi... (95%)');
+        await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, '✅ Finalisasi... (95%)');
     await delay(300);
     
     if (!result || !result.downloadUrl) {
@@ -698,42 +644,36 @@ async function processFormat(ctx, format) {
     
     await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
     
-    // Prepare response
     const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
     const extension = format === 'mp3' ? '.mp3' : '.mp4';
     const filename = sanitizeFilename(title) + extension;
-    
     const emoji = format === 'mp3' ? '🎵' : '🎬';
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
-    const cacheBadge = result.cached ? '⚡ *Cached* | ' : '';
-    
-    const warningText = result.warning ? `\n${result.warning}\n` : '';
     
     const successMessage = 
-      `${emoji} ${cacheBadge}*Konversi Berhasil!*\n\n` +
+      `${emoji} *Konversi Berhasil!*\n\n` +
       `📝 *Judul:* ${title}\n` +
       `📁 *File:* ${filename}\n` +
       `🎚️ *Format:* ${typeText}\n\n` +
       `🔗 *Link Download:*\n` +
-      `[📥 Klik di sini untuk download](${result.downloadUrl})\n` +
-      warningText +
-      `\n⚠️ *PENTING - BACA!*\n` +
-      `• Link bisa expired dalam hitungan menit\n` +
-      `• Error "code: 2-1" = link sudah mati\n` +
-      `• Kalau gagal, kirim ulang link YouTube`;
+      `[📥 KLIK DI SINI UNTUK DOWNLOAD](${result.downloadUrl})\n\n` +
+      `⚠️ *PENTING - BACA SEKARANG!*\n` +
+      `• Link hanya berlaku **1x download**\n` +
+      `• Expired dalam **1-2 menit**\n` +
+      `• Kalau error **"code: 2-1"** = link sudah tidak valid\n` +
+      `• **Solusi:** Kirim ulang link atau ketik /retry\n` +
+      `• Gunakan **download manager** (ADM/IDM) untuk hasil terbaik`;
     
     await ctx.reply(successMessage, { 
       parse_mode: 'Markdown', 
-      disable_web_page_preview: false,
-      link_preview_options: { is_disabled: false }
+      disable_web_page_preview: false
     });
     
   } catch (err) {
     logger.error({ userId, url, format, error: err.message }, 'Conversion failed');
-    
     const errorMessage = getUserFriendlyError(err);
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
-      } finally {
+  } finally {
     userStates.del(userId);
   }
 }
@@ -744,22 +684,12 @@ async function processFormat(ctx, format) {
 
 bot.catch((err, ctx) => {
   logger.error({ error: err.message, stack: err.stack, ctx: ctx?.updateType }, 'Unhandled bot error');
-  
-  const safeReply = async () => {
-    try {
-      await ctx?.reply?.('❌ Terjadi kesalahan sistem. Silakan coba lagi nanti.');
-    } catch (e) {
-      // Ignore if can't send message
-    }
-  };
-  safeReply();
-});
+  ctx?.reply?.('❌ Terjadi kesalahan sistem. Silakan coba lagi nanti.').catch(() => {});});
 
 // ═══════════════════════════════════════════════════════════
 // 🚀 BOT LAUNCH
 // ═══════════════════════════════════════════════════════════
 
-// Webhook handler for serverless/Vercel
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
@@ -774,23 +704,18 @@ module.exports = async (req, res) => {
   }
 };
 
-// Polling mode for local development
 if (require.main === module) {
   logger.info('🚀 Starting bot in polling mode...');
-  
-  bot.launch().then(() => {
-    logger.info('✅ Bot is ready!');
-  }).catch(err => {
+  bot.launch().then(() => logger.info('✅ Bot is ready!')).catch(err => {
     logger.error({ error: err.message }, 'Failed to launch bot');
-    process.exit(1);  });
+    process.exit(1);
+  });
   
-  // Graceful shutdown
   const shutdown = (signal) => {
     logger.info(`🛑 Received ${signal}, shutting down gracefully...`);
     bot.stop(signal);
     process.exit(0);
   };
-  
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
 }
