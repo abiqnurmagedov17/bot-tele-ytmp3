@@ -5,8 +5,8 @@ const tough = require('tough-cookie');
 
 const CONFIG = {
   TIMEOUT: 30000,
-  MAX_POLLS: 25, // 🔥 FIX 2: Turun dari 50 ke 25
-  POLL_INTERVAL: 1200, // 🔥 FIX 2: Turun dari 2000 ke 1200 (total 30 detik)
+  MAX_POLLS: 50,
+  POLL_INTERVAL: 2000,
   MAX_RETRIES: 3,
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -16,13 +16,12 @@ const CONFIG = {
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
   ],
   RATE_LIMIT_DELAY: 500,
-  STATE_TTL: 2 * 60 * 1000,
-  MAX_REQUESTS_PER_MINUTE: 10 // 🔥 FIX 1: Batas request per menit
+  STATE_TTL: 2 * 60 * 1000
 };
 
 const userStates = new Map();
 const stateTimeouts = new Map();
-const rateLimits = new Map();
+const rateLimits = new Map(); // ➕ Baru: untuk /limit command
 
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
@@ -48,8 +47,7 @@ function setUserState(userId, state) {
     stateTimeouts.delete(userId);
   }, CONFIG.STATE_TTL);
   
-  stateTimeouts.set(userId, timeout);
-}
+  stateTimeouts.set(userId, timeout);}
 
 function deleteUserState(userId) {
   if (stateTimeouts.has(userId)) {
@@ -78,14 +76,13 @@ async function getVideoTitle(url) {
   }
 }
 
-// 🔥 FIX 3: Turunin delay
 function delay(ms, withJitter = false) {
   const actualDelay = withJitter ? ms + Math.random() * ms : ms;
   return new Promise(resolve => setTimeout(resolve, actualDelay));
 }
 
-// 🔥 FIX 4: FixedUA untuk menjaga konsistensi
-async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
+// 🔥 FIX: NO MORE VALIDATION. DAPET URL -> LANGSUNG OPER KE USER.
+async function ytmp(url, format = 'mp3', retryCount = 0) {
   log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/${CONFIG.MAX_RETRIES}`);
   
   try {
@@ -94,14 +91,12 @@ async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
     const videoId = match[1];
 
     const jar = new tough.CookieJar();
-    // 🔥 FIX 4: Gunakan fixedUA jika ada
-    const currentUA = fixedUA || getUA();
+    const currentUA = getUA();
     
     const headers = {
       'User-Agent': currentUA,
       'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',      'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
       'Referer': 'https://id.ytmp3.mobi/v1/',
       'Origin': 'https://id.ytmp3.mobi',
@@ -132,17 +127,12 @@ async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
       }
     });
     
-    // 🔥 FIX 6: Fast fail
-    if (!init.data || !init.data.convertURL) {
-      throw new Error('[Init] Invalid response structure - API mungkin berubah');
-    }
-    
     if (init.data.error) throw new Error(`[Init] ${init.data.error}`);
+    if (!init.data.convertURL) throw new Error('[Init] Gagal inisialisasi - no convertURL');
     
     log.debug('[Step 1] Session initialized successfully');
     
-    // 🔥 FIX 3: Turunin delay dari 300 ke 150
-    await delay(150, true);
+    await delay(300, true);
 
     log.debug(`[Step 2] Sending convert request (${format})...`);
     const convert = await client.get(init.data.convertURL, {
@@ -155,12 +145,12 @@ async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
     
     log.debug(`[Step 2] Convert response: ${JSON.stringify(convert.data).substring(0, 200)}...`);
     
-    if (convert.data.error && convert.data.error !== 'in_progress') {
-      throw new Error(`[Convert] ${convert.data.error}`);
+    if (convert.data.error && convert.data.error !== 'in_progress') {      throw new Error(`[Convert] ${convert.data.error}`);
     }
 
+    // 🔥 DAPET URL -> LANGSUNG LEMPAR, JANGAN DIUTAK-ATIK LAGI!
     if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
-      log.debug('[Step 2] Got direct download URL!');
+      log.debug('[Step 2] Got direct download URL! Giving it to user untouched.');
       const title = await getVideoTitle(url);
       return { downloadUrl: convert.data.downloadURL, title, format };
     }
@@ -182,8 +172,9 @@ async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
           
           const progressData = prog.data;
           
+          // 🔥 DAPET URL -> LANGSUNG LEMPAR!
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
-            log.debug('[Step 3] Got download URL from polling!');
+            log.debug('[Step 3] Got download URL from polling! Giving it to user untouched.');
             const title = await getVideoTitle(url);
             return { downloadUrl: progressData.downloadURL, title, format };
           }
@@ -202,8 +193,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
             }
           }
           
-          // 🔥 FIX 3: Turunin delay dari 500 ke 200
-          await delay(200, true);
+          await delay(500, true);
         }        
         await delay(CONFIG.POLL_INTERVAL, true);
       }
@@ -227,13 +217,16 @@ async function ytmp(url, format = 'mp3', retryCount = 0, fixedUA = null) {
       const backoffDelay = 2000 + Math.random() * 3000;
       log.info(`[Retry] Attempt ${retryCount + 2}/${CONFIG.MAX_RETRIES} after ${Math.round(backoffDelay)}ms`);
       await delay(backoffDelay);
-      // 🔥 FIX 4: Pass UA yang sama saat retry
-      return ytmp(url, format, retryCount + 1, fixedUA);
+      return ytmp(url, format, retryCount + 1);
     }
     
     throw err;
   }
 }
+
+// ═══════════════════════════════════════════════════════════
+// ➕ NEW: API Status Checker (untuk /ping)
+// ═══════════════════════════════════════════════════════════
 
 async function checkApiStatus() {
   const apis = [
@@ -250,36 +243,28 @@ async function checkApiStatus() {
       results.push({ name: api.name, status: 'online', responseTime: `${Date.now() - start}ms`, statusCode: res.status });
     } catch (err) {
       results.push({ name: api.name, status: 'offline', error: err.message, statusCode: err.response?.status || 'N/A' });
-    }
-  }
+    }  }
   return results;
 }
 
+// ═══════════════════════════════════════════════════════════
+// ➕ NEW: Bot Initialization + Middleware
+// ═══════════════════════════════════════════════════════════
+
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// 🔥 FIX 1: Rate limiter yang beneran nge-block
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
   const start = Date.now();
   
+  // ➕ Rate limiting untuk /limit command
   if (userId) {
     const now = Date.now();
-    let limit = rateLimits.get(userId);
-    
-    if (!limit || now > limit.resetAt) {
-      // Reset jika sudah lewat 1 menit
-      limit = { count: 1, resetAt: now + 60000 };
-      rateLimits.set(userId, limit);
+    const limit = rateLimits.get(userId) || { count: 0, resetAt: now + 60000 };
+    if (now > limit.resetAt) {
+      rateLimits.set(userId, { count: 1, resetAt: now + 60000 });
     } else {
       limit.count++;
-      rateLimits.set(userId, limit);
-      
-      // 🔥 FIX 1: Block jika melebihi batas
-      if (limit.count > CONFIG.MAX_REQUESTS_PER_MINUTE) {
-        log.warn(`User ${userId} rate limited (${limit.count} requests)`);
-        await ctx.reply('🚦 *Limit tercapai!* Tunggu 1 menit sebelum menggunakan bot lagi.', { parse_mode: 'Markdown' });
-        return; // Langsung block, ga lanjut ke handler
-      }
     }
   }
   
@@ -352,8 +337,11 @@ bot.command('status', (ctx) => {
   }
 });
 
-bot.command('ping', async (ctx) => {
-  const msg = await ctx.reply('🏓 *Mengecek API...*', { parse_mode: 'Markdown' });
+// ═══════════════════════════════════════════════════════════
+// ➕ NEW COMMANDS
+// ═══════════════════════════════════════════════════════════
+
+bot.command('ping', async (ctx) => {  const msg = await ctx.reply('🏓 *Mengecek API...*', { parse_mode: 'Markdown' });
   try {
     const apis = await checkApiStatus();
     let text = '🏓 *Status API*\n\n';
@@ -392,18 +380,17 @@ bot.command('limit', async (ctx) => {
   const userName = ctx.from.username || ctx.from.first_name || 'User';
   const now = Date.now();
   const limit = rateLimits.get(userId) || { count: 0, resetAt: now + 60000 };
-  const remaining = Math.max(0, CONFIG.MAX_REQUESTS_PER_MINUTE - limit.count);
+  const remaining = Math.max(0, 10 - limit.count);
   const resetIn = Math.ceil((limit.resetAt - now) / 1000);
   
   let text = `📊 *Limit Usage*\n\n`;
   text += `👤 *User:* @${userName}\n`;
-  text += `🔄 *Used:* ${limit.count}/${CONFIG.MAX_REQUESTS_PER_MINUTE} requests\n`;
+  text += `🔄 *Used:* ${limit.count}/10 requests\n`;
   text += `✅ *Remaining:* ${remaining}\n`;
   text += `⏱️ *Reset in:* ${resetIn}s\n\n`;
   text += remaining > 0 ? `✨ *Status:* ACTIVE` : `🚦 *Status:* RATE LIMITED\n⏳ Tunggu ${resetIn}s`;
   
-  ctx.reply(text, { parse_mode: 'Markdown' });
-});
+  ctx.reply(text, { parse_mode: 'Markdown' });});
 
 bot.command('retry', async (ctx) => {
   const userId = ctx.from.id;
@@ -420,6 +407,10 @@ bot.command('retry', async (ctx) => {
     ]).reply_markup
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ➕ MESSAGE & CALLBACK HANDLERS (Original + Small Fix)
+// ═══════════════════════════════════════════════════════════
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
@@ -449,7 +440,6 @@ bot.on('text', async (ctx) => {
     ])
   );
 });
-
 bot.action('format_mp3', async (ctx) => { await processFormat(ctx, 'mp3'); });
 bot.action('format_mp4', async (ctx) => { await processFormat(ctx, 'mp4'); });
 
@@ -498,50 +488,36 @@ async function processFormat(ctx, format) {
     const filename = sanitizeFilename(title) + extension;
     const emoji = format === 'mp3' ? '🎵' : '🎬';
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
-    
-    // 🔥 FIX 7: Tambah tombol download dan retry
-    const successMessage = 
+        const successMessage = 
       `${emoji} *Konversi Berhasil!*\n\n` +
       `📝 *Judul:* ${title}\n` +
       `📁 *File:* ${filename}\n` +
       `🎚️ *Format:* ${typeText}\n\n` +
+      `🔗 *Link Download:*\n` +
+      `\`${result.downloadUrl}\`\n\n` +
       `⚠️ *PENTING!*\n` +
       `• Link hanya sekali pakai & cepat expired!\n` +
       `• JANGAN dibuka dulu kalau belum siap download!\n` +
+      `• Copy link-nya, jangan diklik langsung dari chat!\n` +
       `• Kalau error, link sudah mati. Kirim ulang URL.`;
     
-    // 🔥 FIX 7: Tombol download & retry
     await ctx.reply(successMessage, { 
       parse_mode: 'Markdown', 
-      disable_web_page_preview: true,
-      reply_markup: Markup.inlineKeyboard([
-        [Markup.button.url('📥 Download Sekarang', result.downloadUrl)],
-        [Markup.button.callback('🔄 Generate Link Baru', `retry_${format}`)]
-      ]).reply_markup
+      disable_web_page_preview: true
     });
     
   } catch (err) {
     log.error(`[User ${userId}] Error: ${err.message}`);
     
-    // 🔥 FIX 5: Error message yang lebih spesifik
     let errorMessage = '❌ *Gagal memproses link*\n\n';
-    
-    if (err.message.includes('Init')) {
-      errorMessage += '⚠️ API berubah / init gagal. Bot mungkin perlu update.';
-    } else if (err.message.includes('Convert')) {
-      errorMessage += '⚠️ Convert gagal (kemungkinan video bermasalah atau terkena copyright)';
-    } else if (err.message.includes('Polling')) {
-      errorMessage += '⏳ Timeout ambil data dari server. Coba lagi dengan video lain.';
-    } else if (err.message.includes('rate') || err.message.includes('limit')) {
-      errorMessage += '🚦 Kena limit server. Tunggu beberapa menit lalu coba lagi.';
-    } else if (err.message.includes('URL YouTube tidak valid')) {
-      errorMessage += 'Link YouTube tidak valid. Periksa kembali linknya.';
+    if (err.message.includes('URL YouTube tidak valid')) {
+      errorMessage += 'Link YouTube tidak valid.';
     } else if (err.message.includes('Timeout')) {
       errorMessage += 'Proses konversi terlalu lama. Silakan coba lagi.';
     } else if (err.message.includes('Video tidak ditemukan')) {
-      errorMessage += 'Video tidak ditemukan. Mungkin sudah dihapus atau private.';
+      errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
     } else {
-      errorMessage += `Server mungkin sibuk. Coba lagi nanti.\n\n_Error: ${err.message.substring(0, 100)}_`;
+      errorMessage += `Server mungkin sibuk. Coba lagi nanti.`;
     }
     
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
@@ -550,35 +526,18 @@ async function processFormat(ctx, format) {
   }
 }
 
-// 🔥 FIX 7: Handler untuk tombol retry
-bot.action(/^retry_(mp3|mp4)$/, async (ctx) => {
-  const userId = ctx.from.id;
-  const format = ctx.match[1];
-  const state = userStates.get(userId);
-  
-  if (!state || !state.url) {
-    await ctx.answerCbQuery('Tidak ada sesi aktif');
-    return;
-  }
-  
-  await ctx.answerCbQuery('🔄 Membuat link baru...');
-  
-  // Reset state dan proses ulang
-  setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
-  
-  // Panggil processFormat langsung
-  await processFormat(ctx, format);
-});
-
 bot.catch((err, ctx) => {
   log.error(`[Bot] Error: ${err}`);
   ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {});
 });
 
+// ═══════════════════════════════════════════════════════════
+// ➕ EXPORT & LAUNCH (Original)
+// ═══════════════════════════════════════════════════════════
+
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
-    try {
-      await bot.handleUpdate(req.body);
+    try {      await bot.handleUpdate(req.body);
       res.status(200).send('OK');
     } catch (err) {
       log.error(`[Webhook] Error: ${err}`);
