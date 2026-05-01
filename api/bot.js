@@ -25,7 +25,6 @@ const CONFIG = {
   STATE_TTL: 2 * 60
 };
 
-// Static User Agent - jangan diacak!
 const STATIC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const log = {
@@ -35,25 +34,20 @@ const log = {
   warn: (msg) => console.log(`[WARN] ${msg}`)
 };
 
-// Escape karakter khusus untuk MarkdownV2
+// FIX: Fungsi escape yang lebih kuat untuk MarkdownV2
 function escapeMarkdownV2(text) {
   if (!text) return '';
-  // Escape semua karakter khusus MarkdownV2
-  return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+  return text.toString().replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
 
-// Fungsi helper untuk cek rate limit
 async function isRateLimited(userId) {
   if (!redis) return false;
   try {
     const key = `ratelimit:${userId}`;
-    const limit = 10;
-    const window = 60;
     const currentUsage = await redis.incr(key);
-    if (currentUsage === 1) await redis.expire(key, window);
-    return currentUsage > limit;
+    if (currentUsage === 1) await redis.expire(key, 60);
+    return currentUsage > 10;
   } catch (err) {
-    log.error(`Rate limit error: ${err.message}`);
     return false;
   }
 }
@@ -61,588 +55,148 @@ async function isRateLimited(userId) {
 async function getRateLimitTTL(userId) {
   if (!redis) return 0;
   try {
-    const key = `ratelimit:${userId}`;
-    return await redis.ttl(key);
+    return await redis.ttl(`ratelimit:${userId}`);
   } catch (err) {
     return 0;
   }
 }
 
-// Fungsi untuk menyimpan state user ke Redis
 async function setUserState(userId, state) {
   if (!redis) return;
   try {
-    const key = `user:state:${userId}`;
-    await redis.set(key, state, { ex: CONFIG.STATE_TTL });
-    log.debug(`State saved for user ${userId}`);
+    await redis.set(`user:state:${userId}`, state, { ex: CONFIG.STATE_TTL });
   } catch (err) {
-    log.error(`Failed to save state: ${err.message}`);
+    log.error(`State save error: ${err.message}`);
   }
 }
 
 async function getUserState(userId) {
   if (!redis) return null;
   try {
-    const key = `user:state:${userId}`;
-    const data = await redis.get(key);
+    const data = await redis.get(`user:state:${userId}`);
     if (!data) return null;
-    if (typeof data === 'object') return data;
-    if (typeof data === 'string') {
-      try {
-        return JSON.parse(data);
-      } catch (e) {
-        return null;
-      }
-    }
-    return data;
+    return typeof data === 'string' ? JSON.parse(data) : data;
   } catch (err) {
-    log.error(`Failed to get state: ${err.message}`);
     return null;
   }
 }
 
 async function deleteUserState(userId) {
-  if (!redis) return;
-  try {
-    const key = `user:state:${userId}`;
-    await redis.del(key);
-    log.debug(`State deleted for user ${userId}`);
-  } catch (err) {
-    log.error(`Failed to delete state: ${err.message}`);
-  }
+  if (redis) await redis.del(`user:state:${userId}`);
 }
 
-function sanitizeFilename(name) {
-  const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);
-  return clean || 'audio';
-}
-
-// PERBAIKAN: Fungsi getVideoTitle - gunakan ${videoId} dengan benar
+// FIX: Perbaikan Template Literal ${videoId}
 async function getVideoTitle(url) {
   try {
     const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (!match) return `video_${Date.now()}`;
     const videoId = match[1];
-    // PERBAIKAN: Gunakan template literal yang benar dengan $, bukan 0
-    const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { timeout: 5000 });
+    // Menggunakan NoEmbed karena lebih stabil untuk Vercel
+    const response = await axios.get(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`, { timeout: 5000 });
     return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
-    log.warn(`Failed to get video title: ${err.message}`);
     return `video_${Date.now()}`;
   }
 }
 
-function delay(ms, withJitter = false) {
-  const actualDelay = withJitter ? ms + Math.random() * ms : ms;
-  return new Promise(resolve => setTimeout(resolve, actualDelay));
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Fungsi ytmp yang diperbaiki dengan identitas tetap
 async function ytmp(url, format = 'mp3', retryCount = 0) {
-  log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/3`);
-  
+  const backend = '.ymcdn.org';
   try {
     const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    if (!match) throw new Error('URL YouTube tidak valid');
     const videoId = match[1];
-    
     const jar = new tough.CookieJar();
-    
-    // Gunakan header yang sangat spesifik dan konsisten
     const headers = {
       'User-Agent': STATIC_UA,
-      'Accept': '*/*',
-      'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
       'Referer': 'https://id.ytmp3.mobi/v1/',
-      'Origin': 'https://id.ytmp3.mobi/v1',
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-site',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
+      'Origin': 'https://id.ytmp3.mobi/v1'
     };
-    
     const client = wrapper(axios.create({ jar, timeout: CONFIG.TIMEOUT, headers }));
-    
-    // STEP 1: Init dengan parameter yang benar
-    log.debug('[Step 1] Initializing session...');
-    const init = await client.get('https://a.ymcdn.org/api/v1/init', {
-      params: { 
-        p: 'y', 
-        '23': '1llum1n471', 
-        '_': Math.random() 
-      }
+
+    const init = await client.get(`https://a${backend}/api/v1/init`, {
+      params: { p: 'y', '23': '1llum1n471', _: Math.random() }
     });
+
+    const convert = await client.get(`${init.data.convertURL}&v=${videoId}&f=${format}&=${Math.random()}`);
     
-    if (init.data.error) {
-      throw new Error(`[Init] ${init.data.error}`);
-    }
-    
-    if (!init.data.convertURL) {
-      throw new Error('[Init] No convertURL received');
-    }
-    
-    log.debug('[Step 1] Session initialized successfully');
-    await delay(300, true);
-    
-    // STEP 2: Convert dengan parameter yang lengkap
-    log.debug(`[Step 2] Sending convert request (${format})...`);
-    const convert = await client.get(init.data.convertURL, {
-      params: { 
-        v: videoId, 
-        f: format, 
-        '_': Math.random() 
+    let polls = 0;
+    while (polls < CONFIG.MAX_POLLS) {
+      polls++;
+      await delay(CONFIG.POLL_INTERVAL);
+      const prog = await client.get(convert.data.progressURL);
+      if (prog.data.progress >= 3) {
+        const title = await getVideoTitle(url);
+        return { downloadUrl: convert.data.downloadURL, title, format };
       }
-    });
-    
-    log.debug(`[Step 2] Convert response received`);
-    
-    if (convert.data.error && convert.data.error !== 'in_progress') {
-      throw new Error(`[Convert] ${convert.data.error}`);
     }
-    
-    const progressURL = convert.data.progressURL;
-    let finalDownloadURL = convert.data.downloadURL;
-    
-    // Jika langsung dapat download URL
-    if (finalDownloadURL && finalDownloadURL !== '#') {
-      log.debug('[Step 2] Got direct download URL!');
-      const title = await getVideoTitle(url);
-      return { downloadUrl: finalDownloadURL, title, format };
-    }
-    
-    // STEP 3: Polling (wajib sampai progress selesai)
-    if (progressURL) {
-      log.debug('[Step 3] Starting polling...');
-      let polls = 0;
-      
-      while (polls < CONFIG.MAX_POLLS) {
-        polls++;
-        
-        try {
-          await delay(CONFIG.POLL_INTERVAL, true);
-          
-          const prog = await client.get(progressURL);
-          const progressData = prog.data;
-          
-          log.debug(`[Step 3] Poll ${polls}: progress=${progressData.progress}, error=${progressData.error}`);
-          
-          // Cek apakah progress sudah mencapai 3 atau lebih (indikasi selesai)
-          if (progressData.progress >= 3) {
-            if (progressData.downloadURL && progressData.downloadURL !== '#') {
-              finalDownloadURL = progressData.downloadURL;
-              log.debug('[Step 3] Download ready from polling!');
-              break;
-            }
-          }
-          
-          // Cek error
-          if (progressData.error && progressData.error !== 'in_progress') {
-            throw new Error(`[Polling] Error ${progressData.error}`);
-          }
-          
-          // Jika progress sudah 100%
-          if (progressData.progress === 100) {
-            if (finalDownloadURL && finalDownloadURL !== '#') {
-              log.debug('[Step 3] Progress 100%, download ready');
-              break;
-            }
-          }
-          
-        } catch (err) {
-          log.debug(`[Step 3] Poll error: ${err.message}`);
-          
-          // Jika error 404 tapi ada downloadURL, coba gunakan itu
-          if (err.response?.status === 404 && finalDownloadURL && finalDownloadURL !== '#') {
-            log.debug('[Step 3] Fallback to existing download URL');
-            break;
-          }
-          
-          // Lanjutkan polling jika masih ada kesempatan
-          if (polls >= CONFIG.MAX_POLLS) {
-            throw err;
-          }
-        }
-      }
-      
-      if (!finalDownloadURL || finalDownloadURL === '#') {
-        throw new Error('[Polling] Failed to get download URL');
-      }
-      
-      const title = await getVideoTitle(url);
-      return { downloadUrl: finalDownloadURL, title, format };
-    }
-    
-    throw new Error('[Convert] No valid response received');
-    
+    throw new Error('Timeout');
   } catch (err) {
-    log.error(`[Conversion] Error: ${err.message}`);
-    
-    const shouldRetry = retryCount < CONFIG.MAX_RETRIES - 1 && 
-      (err.message.includes('Timeout') || 
-       err.message.includes('ECONNREFUSED') || 
-       err.message.includes('socket hang up') ||
-       err.message.includes('rate') || 
-       err.message.includes('limit') ||
-       err.message.includes('2-1'));
-    
-    if (shouldRetry) {
-      const backoffDelay = 2000 + Math.random() * 3000;
-      log.info(`[Retry] Attempt ${retryCount + 2}/3 after ${Math.round(backoffDelay)}ms`);
-      await delay(backoffDelay);
-      return ytmp(url, format, retryCount + 1);
-    }
-    
+    if (retryCount < CONFIG.MAX_RETRIES) return ytmp(url, format, retryCount + 1);
     throw err;
   }
 }
 
-async function checkApiStatus() {
-  const apis = [
-    { name: 'YTMP3 API', url: 'https://a.ymcdn.org/api/v1/init', params: { p: 'y', '23': '1llum1n471', _: Math.random() } },
-    { name: 'NoEmbed API', url: 'https://noembed.com/embed', params: { url: 'https://youtube.com/watch?v=dQw4w9WgXcQ' } }
-  ];
-  const results = [];
-  for (const api of apis) {
-    try {
-      const start = Date.now();
-      const res = await axios.get(api.url, { params: api.params, timeout: 8000, headers: { 'User-Agent': STATIC_UA } });
-      results.push({ name: api.name, status: 'online', responseTime: `${Date.now() - start}ms`, statusCode: res.status });
-    } catch (err) {
-      results.push({ name: api.name, status: 'offline', error: err.message, statusCode: err.response?.status || 'N/A' });
-    }
-  }
-  return results;
-}
-
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Middleware global hanya untuk logging
-bot.use(async (ctx, next) => {
-  const start = Date.now();
-  await next();
-  const ms = Date.now() - start;
-  log.info(`${ctx.from?.first_name || 'User'}: ${ctx.message?.text || ctx.callbackQuery?.data || 'Interaction'} (${ms}ms)`);
-});
-
-bot.start(async (ctx) => {
-  const welcomeMessage = `🎬 *YouTube Downloader Bot* 🎬
-
-Halo ${ctx.from.first_name || 'Kak'}!
-
-Kirimkan link YouTube, lalu pilih format:
-• *MP3* - Audio only
-• *MP4* - Video with audio
-
-*Cara penggunaan:*
-1. Kirim link YouTube
-2. Pilih format MP3 atau MP4
-3. Tunggu proses konversi
-4. *SEGERA klik atau copy link* (link hanya bertahan 30-60 detik!)
-
-━━━━━━━━━━━━━━━━━━━━
-👤 *Owner Bot:* Abiq Nurmagedov
-📦 *GitHub:* github.com/abiqnurmagedov17
-
-⚠️ *PENTING:* 
-• Link download cepat EXPIRED (30-60 detik)
-• SEGERA download setelah muncul
-• Jika error, gunakan tombol "Download Lagi"
-━━━━━━━━━━━━━━━━━━━━
-
-Kirim link YouTube sekarang! 🚀`;
-  ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
-});
-
-bot.help((ctx) => {
-  ctx.reply('📖 *Bantuan*\n\nKirimkan link YouTube, lalu pilih format.\n\n*Format:*\n• MP3 - Audio (musik, podcast)\n• MP4 - Video (tanpa watermark)\n\n*Contoh link:*\n• https://youtube.com/watch?v=xxxxx\n• https://youtu.be/xxxxx\n• https://youtube.com/shorts/xxxxx\n\n*Perintah:*\n/start - Mulai bot\n/help - Bantuan\n/status - Cek status proses\n/ping - Cek status API\n/health - Cek status bot\n/limit - Cek kuota download\n/retry - Generate link baru', { parse_mode: 'Markdown' });
-});
-
-bot.command('status', async (ctx) => {
-  const userId = ctx.from.id;
-  const state = await getUserState(userId);
-  if (state) ctx.reply(`⏳ Sedang memproses: ${state.url} (${state.format || 'mp3'})`);
-  else ctx.reply('✅ Tidak ada proses yang sedang berjalan');
-});
-
-bot.command('ping', async (ctx) => {
-  const msg = await ctx.reply('🏓 *Mengecek API...*', { parse_mode: 'Markdown' });
-  try {
-    const apis = await checkApiStatus();
-    let text = '🏓 *Status API*\n\n';
-    apis.forEach(api => {
-      if (api.status === 'online') text += `✅ *${api.name}*\n   🟢 ONLINE | ${api.responseTime} | HTTP ${api.statusCode}\n\n`;
-      else text += `❌ *${api.name}*\n   🔴 OFFLINE | ${api.error}\n\n`;
-    });
-    text += apis.every(a => a.status === 'online') ? '✨ Semua API OK!' : '⚠️ Ada API yang bermasalah';
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, text, { parse_mode: 'Markdown' });
-  } catch (err) {
-    log.error(`Ping error: ${err.message}`);
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '❌ Gagal cek API', { parse_mode: 'Markdown' });
-  }
-});
-
-bot.command('health', async (ctx) => {
-  const mem = process.memoryUsage();
-  const health = { 
-    status: 'ok', 
-    uptime: `${Math.floor(process.uptime())}s`, 
-    memory: { 
-      rss: `${Math.round(mem.rss / 1024 / 1024)}MB`, 
-      heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)}MB` 
-    },
-    redisStatus: redis ? 'connected' : 'disconnected',
-    timestamp: new Date().toISOString() 
-  };
-  ctx.reply(`📊 *Health Check*\n\`\`\`json\n${JSON.stringify(health, null, 2)}\`\`\``, { parse_mode: 'Markdown' });
-});
-
-bot.command('limit', async (ctx) => {
-  const userId = ctx.from.id;
-  const userName = ctx.from.username || ctx.from.first_name || 'User';
-  
-  if (!redis) {
-    return ctx.reply('⚠️ *Rate limiting tidak tersedia* (Redis tidak terhubung)', { parse_mode: 'Markdown' });
-  }
-  
-  try {
-    const key = `ratelimit:${userId}`;
-    const currentUsage = await redis.get(key);
-    const usage = currentUsage ? parseInt(currentUsage) : 0;
-    const ttl = await redis.ttl(key);
-    const remaining = Math.max(0, 10 - usage);
-    
-    let text = `📊 *Limit Usage*\n\n👤 *User:* @${userName}\n🔄 *Used:* ${usage}/10 requests\n✅ *Remaining:* ${remaining}\n⏱️ *Reset in:* ${ttl > 0 ? ttl : 0}s\n\n`;
-    text += remaining > 0 ? `✨ *Status:* ACTIVE` : `🚦 *Status:* RATE LIMITED\n⏳ Tunggu ${ttl}s`;
-    ctx.reply(text, { parse_mode: 'Markdown' });
-  } catch (err) {
-    log.error(`Limit error: ${err.message}`);
-    ctx.reply('❌ Gagal mengambil data limit', { parse_mode: 'Markdown' });
-  }
-});
-
-bot.command('retry', async (ctx) => {
-  const userId = ctx.from.id;
-  const state = await getUserState(userId);
-  if (!state || !state.url) return ctx.reply('❌ Tidak ada proses sebelumnya. Kirim link YouTube dulu.');
-  await setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
-  ctx.reply(`🔄 *Link di-refresh!* Pilih format:\n\n\`${state.url}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🎵 MP3', 'format_mp3'), Markup.button.callback('🎬 MP4', 'format_mp4')], [Markup.button.callback('❌ Batal', 'format_cancel')]]) });
-});
+bot.start((ctx) => ctx.reply('🎬 *YouTube Downloader*\nKirim link YouTube untuk memulai\\.', { parse_mode: 'MarkdownV2' }));
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const messageText = ctx.message.text.trim();
-  
+  const url = ctx.message.text.trim();
   const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;
-  const match = messageText.match(youtubeRegex);
   
-  if (!match) {
-    return ctx.reply('❌ Mohon kirim link YouTube yang valid.\n\nContoh: https://youtube.com/watch?v=xxxxx');
-  }
-  
-  const existingState = await getUserState(userId);
-  if (existingState) {
-    return ctx.reply('⏳ Mohon tunggu, proses sebelumnya masih berjalan...');
-  }
+  if (!youtubeRegex.test(url)) return ctx.reply('❌ Link tidak valid\\.');
   
   const limited = await isRateLimited(userId);
-  if (limited) {
-    const ttl = await getRateLimitTTL(userId);
-    return ctx.reply(`🚦 *Rate Limit Tercapai!*\nMohon tunggu ${ttl} detik lagi.\n\nLimit: 10 request per menit.`, { parse_mode: 'Markdown' });
-  }
-  
-  const url = messageText;
-  await setUserState(userId, { url, step: 'choose_format', startTime: Date.now() });
-  await ctx.reply('🎬 *Pilih format download:*', Markup.inlineKeyboard([
-    [Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'), 
-     Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')],
-    [Markup.button.callback('❌ Batal', 'format_cancel')]
+  if (limited) return ctx.reply('🚦 Rate limit reached\\. Tunggu sebentar\\.');
+
+  await setUserState(userId, { url, step: 'choose_format' });
+  await ctx.reply('🎬 *Pilih format:*', Markup.inlineKeyboard([
+    [Markup.button.callback('🎵 MP3', 'format_mp3'), Markup.button.callback('🎬 MP4', 'format_mp4')]
   ]));
 });
 
-bot.action('format_mp3', async (ctx) => { 
-  await ctx.answerCbQuery('🎵 Mengkonversi ke MP3...');
-  await processFormat(ctx, 'mp3'); 
-});
-
-bot.action('format_mp4', async (ctx) => { 
-  await ctx.answerCbQuery('🎬 Mengkonversi ke MP4...');
-  await processFormat(ctx, 'mp4'); 
-});
-
-bot.action('format_cancel', async (ctx) => { 
-  const userId = ctx.from.id; 
-  await ctx.answerCbQuery('❌ Proses dibatalkan');
-  await deleteUserState(userId); 
-  await ctx.editMessageText('❌ Proses dibatalkan.'); 
-});
-
-async function processFormat(ctx, format) {
+bot.action(/format_(mp3|mp4)/, async (ctx) => {
+  const format = ctx.match[1];
   const userId = ctx.from.id;
   const state = await getUserState(userId);
   
-  if (!state || state.step !== 'choose_format') { 
-    await ctx.editMessageText('⏰ Sesi telah berakhir. Kirim link YouTube lagi.'); 
-    await deleteUserState(userId); 
-    return; 
-  }
+  if (!state) return ctx.answerCbQuery('Sesi expired!');
   
-  const url = state.url;
-  const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
-  await setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
-  
+  await ctx.answerCbQuery(`Memproses ${format.toUpperCase()}...`);
+  await ctx.editMessageText('⏳ Sedang mengkonversi...');
+
   try {
-    await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
-    
-    await ctx.editMessageText(`🔍 Menganalisa link...`); 
-    await delay(500);
-    const loadingMsg = ctx.callbackQuery.message;
-    
-    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, 
-      `⏳ *Proses Konversi*\n` +
-      `[▓▓▓░░░░░░░] 25%\n\n` +
-      `📡 Menghubungkan ke server...`, { parse_mode: 'Markdown' });
-    await delay(500);
-    
-    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, 
-      `⏳ *Proses Konversi*\n` +
-      `[▓▓▓▓▓░░░░░] 50%\n\n` +
-      `🔄 Meracik ${formatName}...`, { parse_mode: 'Markdown' });
-    await delay(500);
-    
-    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, 
-      `⏳ *Proses Konversi*\n` +
-      `[▓▓▓▓▓▓▓░░░] 75%\n\n` +
-      `⚙️ Memproses ${formatName}...`, { parse_mode: 'Markdown' });
-    
-    await ctx.telegram.sendChatAction(ctx.chat.id, 'upload_document');
-    
-    const result = await ytmp(url, format);
-    
-    if (!result || !result.downloadUrl) throw new Error('[Process] Gagal mendapatkan link download');
-    
-    await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-    
-    const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
-    const emoji = format === 'mp3' ? '🎵' : '🎬';
-    const escapedTitle = escapeMarkdownV2(title);
+    const result = await ytmp(state.url, format);
+    const escapedTitle = escapeMarkdownV2(result.title);
     const escapedUrl = escapeMarkdownV2(result.downloadUrl);
+
+    const msg = `✅ *Konversi Berhasil\\!*\n\n📝 *Judul:* ${escapedTitle}\n🎚️ *Format:* ${format.toUpperCase()}\n\n🔗 *LINK DOWNLOAD:* \n${escapedUrl}\n\n⚠️ _Klik link di atas untuk memutar atau unduh langsung\\._`;
+
+    const videoId = state.url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/)[1];
     
-    // Gunakan MarkdownV2 untuk format yang lebih baik
-    const successMessage = `
-${emoji} *Konversi Berhasil\\!*
-
-📝 *Judul:* ${escapedTitle}
-🎚️ *Format:* ${format.toUpperCase()}
-
-━━━━━━━━━━━━━━━━━━━━
-🔗 *KLIK LINK DI BAWAH UNTUK DOWNLOAD:*
-${escapedUrl}
-━━━━━━━━━━━━━━━━━━━━
-
-⚠️ *Tips:* 
-• Tekan lama link untuk copy
-• Buka di browser/download manager
-• Link cepat expired \\(30-60 detik\\)
-• Jika error, gunakan tombol "Download Lagi"`;
-
-    const videoMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    const videoId = videoMatch ? videoMatch[1] : null;
-    
-    // PERBAIKAN: Gunakan ${videoId} yang benar, bukan 9${videoId}
-    if (videoId) {
-      await ctx.replyWithPhoto(
-        `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
-        {
-          caption: successMessage,
-          parse_mode: 'MarkdownV2'
-        }
-      );
-    } else {
-      await ctx.reply(successMessage, { parse_mode: 'MarkdownV2' });
-    }
-    
-    // Kirim tombol retry terpisah
-    await ctx.reply('🔄 *Ingin download ulang?* Klik tombol dibawah jika link expired:', {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔄 Download Lagi', 'format_retry')]
-      ])
+    await ctx.deleteMessage();
+    await ctx.replyWithPhoto(`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, {
+      caption: msg,
+      parse_mode: 'MarkdownV2'
     });
-    
+
   } catch (err) {
-    log.error(`[User ${userId}] Error: ${err.message}`);
-    let errorMessage = '❌ *Gagal memproses link*\n\n';
-    
-    if (err.message.includes('URL YouTube tidak valid')) {
-      errorMessage += 'Link YouTube tidak valid.';
-    } else if (err.message.includes('Timeout')) {
-      errorMessage += 'Proses konversi terlalu lama. Silakan coba lagi.';
-    } else if (err.message.includes('2-1') || err.message.includes('expired')) {
-      errorMessage += 'Link download expired atau server sibuk.\nGunakan tombol "Download Lagi" atau kirim ulang link.';
-    } else if (err.message.includes('Video tidak ditemukan')) {
-      errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
-    } else {
-      errorMessage += `Server mungkin sibuk. Coba lagi nanti.\n\nError: ${err.message.substring(0, 100)}`;
-    }
-    
-    await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
-  } finally { 
-    await deleteUserState(userId); 
+    log.error(err.message);
+    ctx.reply('❌ Gagal memproses link\\. Silakan coba lagi\\.');
+  } finally {
+    await deleteUserState(userId);
   }
-}
-
-bot.action('format_retry', async (ctx) => {
-  await ctx.answerCbQuery('🔄 Mengulang proses...');
-  const userId = ctx.from.id;
-  const state = await getUserState(userId);
-  
-  if (!state || !state.url) {
-    await ctx.answerCbQuery('⚠️ Sesi berakhir, kirim link YouTube lagi');
-    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    return;
-  }
-  
-  await setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
-  await ctx.editMessageText('🔄 *Pilih format download ulang:*\n\n⚠️ Link baru akan dibuat, segera download karena cepat expired!', {
-    parse_mode: 'Markdown',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'), 
-       Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')],
-      [Markup.button.callback('❌ Batal', 'format_cancel')]
-    ])
-  });
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  log.error('Unhandled Rejection:', reason);
-});
-
-bot.catch((err, ctx) => { 
-  log.error(`[Bot] Error: ${err.message}`); 
-  ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {}); 
 });
 
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
-    try { 
-      await bot.handleUpdate(req.body); 
-      res.status(200).send('OK'); 
-    }
-    catch (err) { 
-      log.error(`[Webhook] Error: ${err.message}`); 
-      res.status(500).send('Error'); 
-    }
+    await bot.handleUpdate(req.body);
+    res.status(200).send('OK');
   } else {
-    res.status(200).send('YouTube Downloader Bot is running!');
+    res.status(200).send('Bot is running');
   }
 };
-
-if (require.main === module) {
-  log.info('Starting bot in polling mode...');
-  bot.launch();
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
-}
