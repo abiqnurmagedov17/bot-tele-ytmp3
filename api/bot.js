@@ -22,11 +22,10 @@ const CONFIG = {
   MAX_POLLS: 50,
   POLL_INTERVAL: 2000,
   MAX_RETRIES: 3,
-  // Gunakan hanya 1 User Agent yang paling stabil
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   ],
-  STATE_TTL: 2 * 60 // 2 menit dalam detik
+  STATE_TTL: 2 * 60
 };
 
 const log = {
@@ -37,23 +36,17 @@ const log = {
 };
 
 function getUA() {
-  // Selalu return user agent yang sama untuk konsistensi
   return CONFIG.USER_AGENTS[0];
 }
 
-// Fungsi helper untuk cek rate limit
 async function isRateLimited(userId) {
   if (!redis) return false;
   try {
     const key = `ratelimit:${userId}`;
     const limit = 10;
     const window = 60;
-
     const currentUsage = await redis.incr(key);
-    if (currentUsage === 1) {
-      await redis.expire(key, window);
-    }
-    
+    if (currentUsage === 1) await redis.expire(key, window);
     return currentUsage > limit;
   } catch (err) {
     log.error(`Rate limit error: ${err.message}`);
@@ -71,7 +64,6 @@ async function getRateLimitTTL(userId) {
   }
 }
 
-// Fungsi untuk menyimpan state user ke Redis
 async function setUserState(userId, state) {
   if (!redis) return;
   try {
@@ -79,7 +71,7 @@ async function setUserState(userId, state) {
     await redis.set(key, state, { ex: CONFIG.STATE_TTL });
     log.debug(`State saved for user ${userId}`);
   } catch (err) {
-    log.error(`Failed to save state for user ${userId}: ${err.message}`);
+    log.error(`Failed to save state: ${err.message}`);
   }
 }
 
@@ -89,19 +81,17 @@ async function getUserState(userId) {
     const key = `user:state:${userId}`;
     const data = await redis.get(key);
     if (!data) return null;
-    
     if (typeof data === 'object') return data;
     if (typeof data === 'string') {
       try {
         return JSON.parse(data);
       } catch (e) {
-        log.error(`Failed to parse state data: ${e.message}`);
         return null;
       }
     }
     return data;
   } catch (err) {
-    log.error(`Failed to get state for user ${userId}: ${err.message}`);
+    log.error(`Failed to get state: ${err.message}`);
     return null;
   }
 }
@@ -113,7 +103,7 @@ async function deleteUserState(userId) {
     await redis.del(key);
     log.debug(`State deleted for user ${userId}`);
   } catch (err) {
-    log.error(`Failed to delete state for user ${userId}: ${err.message}`);
+    log.error(`Failed to delete state: ${err.message}`);
   }
 }
 
@@ -130,7 +120,6 @@ async function getVideoTitle(url) {
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { timeout: 5000 });
     return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
-    log.warn(`Failed to get video title: ${err.message}`);
     return `video_${Date.now()}`;
   }
 }
@@ -140,25 +129,25 @@ function delay(ms, withJitter = false) {
   return new Promise(resolve => setTimeout(resolve, actualDelay));
 }
 
-// Fungsi ytmp dengan sessionUA yang konsisten
+// Fungsi ytmp yang diperbaiki berdasarkan source web asli
 async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
-  log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/3`);
-  
-  // Gunakan UA yang konsisten untuk seluruh proses
   const userAgent = sessionUA || getUA();
+  // Hasil dari String.fromCharCode(46,121,109,99,100,110,46,111,114,103) = .ymcdn.org
+  const backend = '.ymcdn.org';
+  
+  log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/3`);
   
   try {
     const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (!match) throw new Error('URL YouTube tidak valid');
     const videoId = match[1];
     
-    // Buat cookie jar baru untuk setiap sesi
     const jar = new tough.CookieJar();
     
-    // Header yang konsisten menggunakan UA yang sama
+    // Header yang persis seperti request browser asli
     const headers = {
       'User-Agent': userAgent,
-      'Accept': 'application/json, text/plain, */*',
+      'Accept': '*/*',
       'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
@@ -167,51 +156,60 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      'sec-ch-ua': '"Google Chrome";v="120", "Chromium";v="120", "Not?A_Brand";v="24"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"'
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
     };
     
-    const client = wrapper(axios.create({ 
-      jar, 
-      timeout: CONFIG.TIMEOUT, 
-      maxRedirects: 5, 
-      headers 
-    }));
+    const client = wrapper(axios.create({ jar, timeout: CONFIG.TIMEOUT, headers }));
     
+    // STEP 1: Init dengan Math.random() sesuai kode JS web
     log.debug('[Step 1] Initializing session...');
-    const initUrl = 'https://a.ymcdn.org/api/v1/init';
+    const initUrl = `https://a${backend}/api/v1/init`;
     const init = await client.get(initUrl, { 
-      params: { p: 'y', '23': '1llum1n471', _: Date.now() } 
+      params: { 
+        p: 'y', 
+        '23': '1llum1n471', 
+        '_': Math.random() // Pakai random sesuai source web
+      } 
     });
     
-    if (init.data.error) throw new Error(`[Init] ${init.data.error}`);
-    if (!init.data.convertURL) throw new Error('[Init] Gagal inisialisasi - no convertURL');
+    if (init.data.error) {
+      throw new Error(`[Init] ${init.data.error}`);
+    }
+    
+    if (!init.data.convertURL) {
+      throw new Error('[Init] No convertURL received');
+    }
+    
     log.debug('[Step 1] Session initialized successfully');
-    
     await delay(300, true);
-    log.debug(`[Step 2] Sending convert request (${format})...`);
     
-    const convert = await client.get(init.data.convertURL, { 
-      params: { v: videoId, f: format, _: Date.now() } 
-    });
+    // STEP 2: Convert dengan parameter yang sama seperti web
+    // Di JS web: initialize(e.convertURL, t[1])
+    // Parameter: convertURL + &v=ID + &f=format + &=Math.random()
+    log.debug(`[Step 2] Sending convert request (${format})...`);
+    const convertUrl = `${init.data.convertURL}&v=${videoId}&f=${format}&=${Math.random()}`;
+    const convert = await client.get(convertUrl);
+    
     log.debug(`[Step 2] Convert response received`);
     
     if (convert.data.error && convert.data.error !== 'in_progress') {
       throw new Error(`[Convert] ${convert.data.error}`);
     }
     
-    // Cek apakah langsung dapat download URL
-    if (convert.data.downloadURL && convert.data.downloadURL !== '#') {
+    // STEP 3: Polling untuk progress (sesuai dengan JS web)
+    // Di JS web: progress(e.progressURL, e.downloadURL)
+    const progressURL = convert.data.progressURL;
+    const downloadURL = convert.data.downloadURL;
+    
+    // Jika langsung dapat download URL
+    if (downloadURL && downloadURL !== '#') {
       log.debug('[Step 2] Got direct download URL!');
       const title = await getVideoTitle(url);
-      return { downloadUrl: convert.data.downloadURL, title, format };
+      return { downloadUrl: downloadURL, title, format };
     }
     
-    // Polling untuk progress
-    if (convert.data.progressURL) {
+    if (progressURL) {
       log.debug('[Step 3] Starting polling...');
       let polls = 0;
       
@@ -219,45 +217,47 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
         polls++;
         
         try {
-          // Gunakan delay acak untuk menghindari deteksi bot
           await delay(CONFIG.POLL_INTERVAL, true);
           
-          const prog = await client.get(convert.data.progressURL, {
-            headers: {
-              'Referer': 'https://id.ytmp3.mobi/v1/',
-              'Origin': 'https://id.ytmp3.mobi/v1'
-            }
-          });
-          
+          const prog = await client.get(progressURL);
           const progressData = prog.data;
           
-          if (progressData.downloadURL && progressData.downloadURL !== '#') {
-            log.debug('[Step 3] Got download URL from polling!');
+          log.debug(`[Step 3] Poll ${polls}: progress=${progressData.progress}, error=${progressData.error}`);
+          
+          // Cek apakah sukses (progress >= 3 seperti di web)
+          if (progressData.progress >= 3 && downloadURL && downloadURL !== '#') {
+            log.debug('[Step 3] Download ready!');
             const title = await getVideoTitle(url);
-            return { downloadUrl: progressData.downloadURL, title, format };
+            return { downloadUrl: downloadURL, title, format };
           }
           
-          if (progressData.progress) {
-            log.debug(`[Step 3] Progress: ${progressData.progress}%`);
-          }
-          
+          // Cek error
           if (progressData.error && progressData.error !== 'in_progress') {
-            throw new Error(`[Polling] ${progressData.error}`);
+            throw new Error(`[Polling] Error ${progressData.error}`);
+          }
+          
+          // Jika progress sudah 100%
+          if (progressData.progress === 100) {
+            log.debug('[Step 3] Progress 100%, download should be ready');
+            if (downloadURL && downloadURL !== '#') {
+              const title = await getVideoTitle(url);
+              return { downloadUrl: downloadURL, title, format };
+            }
           }
           
         } catch (err) {
           log.debug(`[Step 3] Poll error: ${err.message}`);
           
-          // Jika 404, coba gunakan downloadURL awal jika ada
-          if (err.response?.status === 404 && convert.data.downloadURL && convert.data.downloadURL !== '#') {
-            log.debug('[Step 3] Fallback to initial download URL');
+          // Jika error 404 tapi ada downloadURL, coba gunakan itu
+          if (err.response?.status === 404 && downloadURL && downloadURL !== '#') {
+            log.debug('[Step 3] Fallback to download URL');
             const title = await getVideoTitle(url);
-            return { downloadUrl: convert.data.downloadURL, title, format };
+            return { downloadUrl: downloadURL, title, format };
           }
           
-          // Lanjutkan polling jika error tidak fatal
-          if (polls < CONFIG.MAX_POLLS) {
-            continue;
+          // Lanjutkan polling jika masih ada kesempatan
+          if (polls >= CONFIG.MAX_POLLS) {
+            throw err;
           }
         }
       }
@@ -265,7 +265,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
       throw new Error('[Polling] Timeout - konversi terlalu lama');
     }
     
-    throw new Error('[Convert] Gagal mendapatkan link download');
+    throw new Error('[Convert] No valid response received');
     
   } catch (err) {
     log.error(`[Conversion] Error: ${err.message}`);
@@ -276,13 +276,13 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
        err.message.includes('socket hang up') ||
        err.message.includes('rate') || 
        err.message.includes('limit') ||
-       err.message.includes('2-1')); // Tambahkan error 2-1 untuk retry
+       err.message.includes('2-1'));
     
     if (shouldRetry) {
       const backoffDelay = 2000 + Math.random() * 3000;
       log.info(`[Retry] Attempt ${retryCount + 2}/3 after ${Math.round(backoffDelay)}ms`);
       await delay(backoffDelay);
-      return ytmp(url, format, retryCount + 1, userAgent);
+      return ytmp(url, format, retryCount + 1, sessionUA);
     }
     
     throw err;
@@ -291,7 +291,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
 
 async function checkApiStatus() {
   const apis = [
-    { name: 'YTMP3 API', url: 'https://a.ymcdn.org/api/v1/init', params: { p: 'y', '23': '1llum1n471', _: Date.now() } },
+    { name: 'YTMP3 API', url: 'https://a.ymcdn.org/api/v1/init', params: { p: 'y', '23': '1llum1n471', _: Math.random() } },
     { name: 'NoEmbed API', url: 'https://noembed.com/embed', params: { url: 'https://youtube.com/watch?v=dQw4w9WgXcQ' } }
   ];
   const results = [];
@@ -484,7 +484,6 @@ async function processFormat(ctx, format) {
   await setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
   
   try {
-    // Generate session UA yang konsisten untuk seluruh proses
     const sessionUA = getUA();
     
     await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
@@ -512,7 +511,6 @@ async function processFormat(ctx, format) {
     
     await ctx.telegram.sendChatAction(ctx.chat.id, 'upload_document');
     
-    // Panggil ytmp dengan sessionUA yang konsisten
     const result = await ytmp(url, format, 0, sessionUA);
     
     if (!result || !result.downloadUrl) throw new Error('[Process] Gagal mendapatkan link download');
@@ -522,7 +520,6 @@ async function processFormat(ctx, format) {
     const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
     const emoji = format === 'mp3' ? '🎵' : '🎬';
     
-    // Peringatan yang lebih tegas tentang link cepat expired
     const successMessage = `
 ${emoji} *Konversi Berhasil!*
 
@@ -610,13 +607,12 @@ bot.action('format_retry', async (ctx) => {
   });
 });
 
-// Global error handler
 process.on('unhandledRejection', (reason, promise) => {
-  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  log.error('Unhandled Rejection:', reason);
 });
 
 bot.catch((err, ctx) => { 
-  log.error(`[Bot] Error: ${err.message}`, err.stack); 
+  log.error(`[Bot] Error: ${err.message}`); 
   ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {}); 
 });
 
@@ -627,7 +623,7 @@ module.exports = async (req, res) => {
       res.status(200).send('OK'); 
     }
     catch (err) { 
-      log.error(`[Webhook] Error: ${err.message}`, err.stack); 
+      log.error(`[Webhook] Error: ${err.message}`); 
       res.status(500).send('Error'); 
     }
   } else {
