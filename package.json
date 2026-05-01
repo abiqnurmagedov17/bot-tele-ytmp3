@@ -1,7 +1,7 @@
 {
   "name": "ytmp3-telegram-bot",
-  "version": "1.1.0",
-  "description": "YouTube to MP3/MP4 Telegram Bot - Production Ready",
+  "version": "1.2.0",
+  "description": "YouTube to MP3/MP4 Telegram Bot - Production Ready with Redis",
   "main": "api/bot.js",
   "scripts": {
     "start": "node api/bot.js",
@@ -9,18 +9,15 @@
     "dev:legacy": "nodemon api/bot.js",
     "lint": "eslint api/**/*.js --fix",
     "test": "echo \"No tests specified\" && exit 0",
-    "postinstall": "echo '✅ Dependencies installed! Jangan lupa isi .env ya!'"
+    "postinstall": "echo '✅ Dependencies installed! Jangan lupa isi .env ya! Pastikan UPSTASH_REDIS_REST_URL dan UPSTASH_REDIS_REST_TOKEN sudah diisi.'"
   },
   "dependencies": {
     "telegraf": "^4.15.3",
     "axios": "^1.6.2",
     "axios-cookiejar-support": "^4.0.0",
     "tough-cookie": "^4.1.3",
-    "node-cache": "^5.1.2",
-    "pino": "^8.17.2",
-    "pino-pretty": "^10.3.1",
-    "dotenv": "^16.3.1",
-    "node-fetch": "^2.7.0"
+    "@upstash/redis": "^1.28.3",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
@@ -36,7 +33,9 @@
     "downloader",
     "mp3",
     "mp4",
-    "telegraf"
+    "telegraf",
+    "redis",
+    "upstash"
   ],
   "author": "Abiq Nurmagedov",
   "license": "MIT",
