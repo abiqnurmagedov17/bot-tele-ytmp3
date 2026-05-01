@@ -4,7 +4,7 @@ const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const { Redis } = require('@upstash/redis');
 
-// Inisialisasi Redis dengan error handling
+// Inisialisasi Redis
 let redis;
 try {
   redis = new Redis({
@@ -14,7 +14,6 @@ try {
   console.log('[INFO] Redis initialized successfully');
 } catch (err) {
   console.error('[ERROR] Failed to initialize Redis:', err.message);
-  // Fallback: Redis tidak wajib untuk bot berjalan
   redis = null;
 }
 
@@ -45,33 +44,41 @@ function getUA() {
   return CONFIG.USER_AGENTS[Math.floor(Math.random() * CONFIG.USER_AGENTS.length)];
 }
 
-// Fungsi untuk menyimpan state user ke Redis dengan error handling
+// Fungsi untuk menyimpan state user ke Redis (tanpa JSON.stringify manual)
 async function setUserState(userId, state) {
-  if (!redis) return; // Skip jika Redis tidak available
-  
+  if (!redis) return;
   try {
     const key = `user:state:${userId}`;
-    await redis.setex(key, CONFIG.STATE_TTL, JSON.stringify(state));
+    // Hapus JSON.stringify, biarkan library yang menangani objeknya
+    await redis.set(key, state, { ex: CONFIG.STATE_TTL });
     log.debug(`State saved for user ${userId}`);
   } catch (err) {
     log.error(`Failed to save state for user ${userId}: ${err.message}`);
   }
 }
 
-// Fungsi untuk mengambil state user dari Redis dengan error handling
+// Fungsi untuk mengambil state user dari Redis
 async function getUserState(userId) {
   if (!redis) return null;
-  
   try {
     const key = `user:state:${userId}`;
     const data = await redis.get(key);
     if (!data) return null;
     
-    // Pastikan data adalah string sebelum di-parse
+    // Jika data sudah berupa objek (otomatis dari library), langsung kembalikan
+    if (typeof data === 'object') return data;
+    
+    // Jika data berupa string, baru di-parse
     if (typeof data === 'string') {
-      return JSON.parse(data);
+      try {
+        return JSON.parse(data);
+      } catch (e) {
+        log.error(`Failed to parse state data: ${e.message}`);
+        return null;
+      }
     }
-    return null;
+    
+    return data;
   } catch (err) {
     log.error(`Failed to get state for user ${userId}: ${err.message}`);
     return null;
@@ -81,7 +88,6 @@ async function getUserState(userId) {
 // Fungsi untuk menghapus state user dari Redis
 async function deleteUserState(userId) {
   if (!redis) return;
-  
   try {
     const key = `user:state:${userId}`;
     await redis.del(key);
@@ -101,6 +107,7 @@ async function getVideoTitle(url) {
     const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (!match) return `video_${Date.now()}`;
     const videoId = match[1];
+    // Perbaiki URL dengan menggunakan template literal yang benar ($ bukan 0)
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { timeout: 5000 });
     return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
@@ -229,21 +236,16 @@ bot.use(async (ctx, next) => {
 
   if (redis) {
     try {
-      // Gunakan incr (increment) di Redis
       const currentUsage = await redis.incr(key);
-
       if (currentUsage === 1) {
-        // Jika ini request pertama, set kadaluarsa 1 menit
         await redis.expire(key, window);
       }
-
       if (currentUsage > limit) {
         const ttl = await redis.ttl(key);
         return ctx.reply(`🚦 *Rate Limit Tercapai!*\nMohon tunggu ${ttl} detik lagi.`, { parse_mode: 'Markdown' });
       }
     } catch (err) {
       log.error('Redis Rate Limit Error:', err);
-      // Jika Redis error, tetap lanjutkan
     }
   }
 
@@ -349,10 +351,20 @@ bot.on('text', async (ctx) => {
   await ctx.reply('🎬 *Pilih format download:*', Markup.inlineKeyboard([[Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'), Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')], [Markup.button.callback('❌ Batal', 'format_cancel')]]));
 });
 
-bot.action('format_mp3', async (ctx) => { await processFormat(ctx, 'mp3'); });
-bot.action('format_mp4', async (ctx) => { await processFormat(ctx, 'mp4'); });
+// Perbaiki handler action dengan menambahkan await dan answerCbQuery
+bot.action('format_mp3', async (ctx) => { 
+  await ctx.answerCbQuery('🎵 Mengkonversi ke MP3...');
+  await processFormat(ctx, 'mp3'); 
+});
+
+bot.action('format_mp4', async (ctx) => { 
+  await ctx.answerCbQuery('🎬 Mengkonversi ke MP4...');
+  await processFormat(ctx, 'mp4'); 
+});
+
 bot.action('format_cancel', async (ctx) => { 
   const userId = ctx.from.id; 
+  await ctx.answerCbQuery('❌ Proses dibatalkan');
   await deleteUserState(userId); 
   await ctx.editMessageText('❌ Proses dibatalkan.'); 
 });
@@ -455,8 +467,9 @@ _Klik tombol di bawah untuk mengunduh file. Link akan kadaluarsa dalam beberapa 
   }
 }
 
-// Tambahkan handler untuk tombol retry
+// Handler untuk tombol retry
 bot.action('format_retry', async (ctx) => {
+  await ctx.answerCbQuery('🔄 Mengulang proses...');
   const userId = ctx.from.id;
   const state = await getUserState(userId);
   if (!state || !state.url) {
@@ -464,7 +477,6 @@ bot.action('format_retry', async (ctx) => {
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     return;
   }
-  await ctx.answerCbQuery('🔄 Mengulang proses...');
   await setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
   await ctx.editMessageText('🔄 *Pilih format download ulang:*', {
     parse_mode: 'Markdown',
