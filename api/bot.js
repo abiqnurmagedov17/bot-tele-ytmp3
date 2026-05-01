@@ -509,8 +509,8 @@ async function processFormat(ctx, format) {
     const filename = sanitizeFilename(title) + extension;
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
     
-    // Format caption untuk audio/video
-    const captionMessage = 
+    // Format pesan teks untuk MP3 (akan dikirim terlebih dahulu)
+    const textMessage = 
       `🎵 *Konversi Berhasil!*\n\n` +
       `📝 *Judul:* ${title}\n` +
       `📁 *File:* ${filename}\n` +
@@ -521,38 +521,27 @@ async function processFormat(ctx, format) {
       `• Kirim ulang link untuk dapat link baru\n\n` +
       `🔗 *Link Download:* [Klik di sini untuk download](${result.downloadUrl})`;
     
-    // Untuk format MP3: kirim audio dengan caption
+    // Untuk format MP3: kirim pesan teks dulu, baru audio stream
     if (format === 'mp3') {
+      // Kirim pesan teks terlebih dahulu
+      await ctx.reply(textMessage, { 
+        parse_mode: 'Markdown', 
+        disable_web_page_preview: false 
+      });
+      
+      // Kirim audio stream setelah pesan teks
       try {
         await ctx.replyWithAudio(result.downloadUrl, {
           title: title,
           filename: filename,
-          caption: captionMessage,
-          parse_mode: 'Markdown'
+          caption: `🎵 *${title}*`
         });
         log.debug(`Audio sent successfully for user ${userId}`);
       } catch (audioErr) {
         log.debug(`Auto-stream audio failed: ${audioErr.message}`);
-        // Fallback: kirim pesan teks biasa jika audio gagal
-        await ctx.reply(captionMessage, { 
-          parse_mode: 'Markdown', 
-          disable_web_page_preview: false 
-        });
       }
     } else {
-      // Untuk format MP4: kirim pesan teks biasa
-      const textMessage = 
-        `🎵 *Konversi Berhasil!*\n\n` +
-        `📝 *Judul:* ${title}\n` +
-        `📁 *File:* ${filename}\n` +
-        `🎚️ *Format:* ${typeText}\n\n` +
-        `🔗 *Link Download:*\n` +
-        `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
-        `⚠️ *PENTING - BACA!*\n` +
-        `• Link bisa expired dalam hitungan menit\n` +
-        `• Error "code: 2-1" = link sudah mati\n` +
-        `• Kirim ulang link untuk dapat link baru`;
-      
+      // Untuk format MP4: kirim pesan teks biasa (tanpa audio stream)
       await ctx.reply(textMessage, { 
         parse_mode: 'Markdown', 
         disable_web_page_preview: false 
