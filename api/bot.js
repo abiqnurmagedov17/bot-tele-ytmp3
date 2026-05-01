@@ -4,11 +4,19 @@ const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const { Redis } = require('@upstash/redis');
 
-// Inisialisasi Redis
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+// Inisialisasi Redis dengan error handling
+let redis;
+try {
+  redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  });
+  console.log('[INFO] Redis initialized successfully');
+} catch (err) {
+  console.error('[ERROR] Failed to initialize Redis:', err.message);
+  // Fallback: Redis tidak wajib untuk bot berjalan
+  redis = null;
+}
 
 const CONFIG = {
   TIMEOUT: 30000,
@@ -37,26 +45,50 @@ function getUA() {
   return CONFIG.USER_AGENTS[Math.floor(Math.random() * CONFIG.USER_AGENTS.length)];
 }
 
-// Fungsi untuk menyimpan state user ke Redis
+// Fungsi untuk menyimpan state user ke Redis dengan error handling
 async function setUserState(userId, state) {
-  const key = `user:state:${userId}`;
-  await redis.setex(key, CONFIG.STATE_TTL, JSON.stringify(state));
-  log.debug(`State saved for user ${userId}`);
+  if (!redis) return; // Skip jika Redis tidak available
+  
+  try {
+    const key = `user:state:${userId}`;
+    await redis.setex(key, CONFIG.STATE_TTL, JSON.stringify(state));
+    log.debug(`State saved for user ${userId}`);
+  } catch (err) {
+    log.error(`Failed to save state for user ${userId}: ${err.message}`);
+  }
 }
 
-// Fungsi untuk mengambil state user dari Redis
+// Fungsi untuk mengambil state user dari Redis dengan error handling
 async function getUserState(userId) {
-  const key = `user:state:${userId}`;
-  const data = await redis.get(key);
-  if (!data) return null;
-  return JSON.parse(data);
+  if (!redis) return null;
+  
+  try {
+    const key = `user:state:${userId}`;
+    const data = await redis.get(key);
+    if (!data) return null;
+    
+    // Pastikan data adalah string sebelum di-parse
+    if (typeof data === 'string') {
+      return JSON.parse(data);
+    }
+    return null;
+  } catch (err) {
+    log.error(`Failed to get state for user ${userId}: ${err.message}`);
+    return null;
+  }
 }
 
 // Fungsi untuk menghapus state user dari Redis
 async function deleteUserState(userId) {
-  const key = `user:state:${userId}`;
-  await redis.del(key);
-  log.debug(`State deleted for user ${userId}`);
+  if (!redis) return;
+  
+  try {
+    const key = `user:state:${userId}`;
+    await redis.del(key);
+    log.debug(`State deleted for user ${userId}`);
+  } catch (err) {
+    log.error(`Failed to delete state for user ${userId}: ${err.message}`);
+  }
 }
 
 function sanitizeFilename(name) {
@@ -72,6 +104,7 @@ async function getVideoTitle(url) {
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { timeout: 5000 });
     return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
+    log.warn(`Failed to get video title: ${err.message}`);
     return `video_${Date.now()}`;
   }
 }
@@ -194,22 +227,24 @@ bot.use(async (ctx, next) => {
   const limit = 10; // Maksimal 10 request
   const window = 60; // Dalam 60 detik
 
-  try {
-    // Gunakan incr (increment) di Redis
-    const currentUsage = await redis.incr(key);
+  if (redis) {
+    try {
+      // Gunakan incr (increment) di Redis
+      const currentUsage = await redis.incr(key);
 
-    if (currentUsage === 1) {
-      // Jika ini request pertama, set kadaluarsa 1 menit
-      await redis.expire(key, window);
-    }
+      if (currentUsage === 1) {
+        // Jika ini request pertama, set kadaluarsa 1 menit
+        await redis.expire(key, window);
+      }
 
-    if (currentUsage > limit) {
-      const ttl = await redis.ttl(key);
-      return ctx.reply(`🚦 *Rate Limit Tercapai!*\nMohon tunggu ${ttl} detik lagi.`, { parse_mode: 'Markdown' });
+      if (currentUsage > limit) {
+        const ttl = await redis.ttl(key);
+        return ctx.reply(`🚦 *Rate Limit Tercapai!*\nMohon tunggu ${ttl} detik lagi.`, { parse_mode: 'Markdown' });
+      }
+    } catch (err) {
+      log.error('Redis Rate Limit Error:', err);
+      // Jika Redis error, tetap lanjutkan
     }
-  } catch (err) {
-    console.error('Redis Error:', err);
-    // Jika Redis error, tetap jalankan bot (fallback)
   }
 
   const start = Date.now();
@@ -254,7 +289,16 @@ bot.command('ping', async (ctx) => {
 
 bot.command('health', async (ctx) => {
   const mem = process.memoryUsage();
-  const health = { status: 'ok', uptime: `${Math.floor(process.uptime())}s`, memory: { rss: `${Math.round(mem.rss / 1024 / 1024)}MB`, heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)}MB` }, timestamp: new Date().toISOString() };
+  const health = { 
+    status: 'ok', 
+    uptime: `${Math.floor(process.uptime())}s`, 
+    memory: { 
+      rss: `${Math.round(mem.rss / 1024 / 1024)}MB`, 
+      heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)}MB` 
+    },
+    redisStatus: redis ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString() 
+  };
   ctx.reply(`📊 *Health Check*\n\`\`\`json\n${JSON.stringify(health, null, 2)}\`\`\``, { parse_mode: 'Markdown' });
 });
 
@@ -262,6 +306,10 @@ bot.command('limit', async (ctx) => {
   const userId = ctx.from.id;
   const userName = ctx.from.username || ctx.from.first_name || 'User';
   const key = `ratelimit:${userId}`;
+  
+  if (!redis) {
+    return ctx.reply('⚠️ *Rate limiting tidak tersedia* (Redis tidak terhubung)', { parse_mode: 'Markdown' });
+  }
   
   try {
     const currentUsage = await redis.get(key);
@@ -273,6 +321,7 @@ bot.command('limit', async (ctx) => {
     text += remaining > 0 ? `✨ *Status:* ACTIVE` : `🚦 *Status:* RATE LIMITED\n⏳ Tunggu ${ttl}s`;
     ctx.reply(text, { parse_mode: 'Markdown' });
   } catch (err) {
+    log.error(`Limit error: ${err.message}`);
     ctx.reply('❌ Gagal mengambil data limit', { parse_mode: 'Markdown' });
   }
 });
@@ -355,10 +404,7 @@ async function processFormat(ctx, format) {
     await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
     
     const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
-    const extension = format === 'mp3' ? '.mp3' : '.mp4';
-    const filename = sanitizeFilename(title) + extension;
     const emoji = format === 'mp3' ? '🎵' : '🎬';
-    const typeText = format === 'mp3' ? 'Audio High Quality' : 'Video HD';
     
     // Tampilan pesan yang lebih cantik
     const successMessage = `
@@ -430,13 +476,29 @@ bot.action('format_retry', async (ctx) => {
   });
 });
 
-bot.catch((err, ctx) => { log.error(`[Bot] Error: ${err}`); ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {}); });
+// Global error handler untuk unhandled promises
+process.on('unhandledRejection', (reason, promise) => {
+  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+bot.catch((err, ctx) => { 
+  log.error(`[Bot] Error: ${err.message}`, err.stack); 
+  ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {}); 
+});
 
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
-    try { await bot.handleUpdate(req.body); res.status(200).send('OK'); }
-    catch (err) { log.error(`[Webhook] Error: ${err}`); res.status(500).send('Error'); }
-  } else res.status(200).send('YouTube Downloader Bot is running!');
+    try { 
+      await bot.handleUpdate(req.body); 
+      res.status(200).send('OK'); 
+    }
+    catch (err) { 
+      log.error(`[Webhook] Error: ${err.message}`, err.stack); 
+      res.status(500).send('Error'); 
+    }
+  } else {
+    res.status(200).send('YouTube Downloader Bot is running!');
+  }
 };
 
 if (require.main === module) {
