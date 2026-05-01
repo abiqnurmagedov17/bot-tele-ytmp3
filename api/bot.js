@@ -22,11 +22,11 @@ const CONFIG = {
   MAX_POLLS: 50,
   POLL_INTERVAL: 2000,
   MAX_RETRIES: 3,
-  USER_AGENTS: [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  ],
   STATE_TTL: 2 * 60
 };
+
+// Static User Agent - jangan diacak!
+const STATIC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
@@ -35,10 +35,7 @@ const log = {
   warn: (msg) => console.log(`[WARN] ${msg}`)
 };
 
-function getUA() {
-  return CONFIG.USER_AGENTS[0];
-}
-
+// Fungsi helper untuk cek rate limit
 async function isRateLimited(userId) {
   if (!redis) return false;
   try {
@@ -64,6 +61,7 @@ async function getRateLimitTTL(userId) {
   }
 }
 
+// Fungsi untuk menyimpan state user ke Redis
 async function setUserState(userId, state) {
   if (!redis) return;
   try {
@@ -112,6 +110,13 @@ function sanitizeFilename(name) {
   return clean || 'audio';
 }
 
+// Escape karakter khusus untuk MarkdownV2
+function escapeMarkdownV2(text) {
+  if (!text) return '';
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+}
+
+// Perbaiki fungsi getVideoTitle - gunakan ${videoId} bukan 0{videoId}
 async function getVideoTitle(url) {
   try {
     const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
@@ -120,6 +125,7 @@ async function getVideoTitle(url) {
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { timeout: 5000 });
     return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
+    log.warn(`Failed to get video title: ${err.message}`);
     return `video_${Date.now()}`;
   }
 }
@@ -129,12 +135,8 @@ function delay(ms, withJitter = false) {
   return new Promise(resolve => setTimeout(resolve, actualDelay));
 }
 
-// Fungsi ytmp yang diperbaiki berdasarkan source web asli
-async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
-  const userAgent = sessionUA || getUA();
-  // Hasil dari String.fromCharCode(46,121,109,99,100,110,46,111,114,103) = .ymcdn.org
-  const backend = '.ymcdn.org';
-  
+// Fungsi ytmp yang diperbaiki dengan identitas tetap
+async function ytmp(url, format = 'mp3', retryCount = 0) {
   log.debug(`Processing URL: ${url} | Format: ${format} | Attempt ${retryCount + 1}/3`);
   
   try {
@@ -144,9 +146,9 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
     
     const jar = new tough.CookieJar();
     
-    // Header yang persis seperti request browser asli
+    // Gunakan header yang sangat spesifik dan konsisten
     const headers = {
-      'User-Agent': userAgent,
+      'User-Agent': STATIC_UA,
       'Accept': '*/*',
       'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
@@ -162,15 +164,14 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
     
     const client = wrapper(axios.create({ jar, timeout: CONFIG.TIMEOUT, headers }));
     
-    // STEP 1: Init dengan Math.random() sesuai kode JS web
+    // STEP 1: Init dengan parameter yang benar
     log.debug('[Step 1] Initializing session...');
-    const initUrl = `https://a${backend}/api/v1/init`;
-    const init = await client.get(initUrl, { 
+    const init = await client.get('https://a.ymcdn.org/api/v1/init', {
       params: { 
         p: 'y', 
         '23': '1llum1n471', 
-        '_': Math.random() // Pakai random sesuai source web
-      } 
+        '_': Math.random() 
+      }
     });
     
     if (init.data.error) {
@@ -184,12 +185,15 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
     log.debug('[Step 1] Session initialized successfully');
     await delay(300, true);
     
-    // STEP 2: Convert dengan parameter yang sama seperti web
-    // Di JS web: initialize(e.convertURL, t[1])
-    // Parameter: convertURL + &v=ID + &f=format + &=Math.random()
+    // STEP 2: Convert dengan parameter yang lengkap
     log.debug(`[Step 2] Sending convert request (${format})...`);
-    const convertUrl = `${init.data.convertURL}&v=${videoId}&f=${format}&=${Math.random()}`;
-    const convert = await client.get(convertUrl);
+    const convert = await client.get(init.data.convertURL, {
+      params: { 
+        v: videoId, 
+        f: format, 
+        '_': Math.random() 
+      }
+    });
     
     log.debug(`[Step 2] Convert response received`);
     
@@ -197,18 +201,17 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
       throw new Error(`[Convert] ${convert.data.error}`);
     }
     
-    // STEP 3: Polling untuk progress (sesuai dengan JS web)
-    // Di JS web: progress(e.progressURL, e.downloadURL)
     const progressURL = convert.data.progressURL;
-    const downloadURL = convert.data.downloadURL;
+    let finalDownloadURL = convert.data.downloadURL;
     
     // Jika langsung dapat download URL
-    if (downloadURL && downloadURL !== '#') {
+    if (finalDownloadURL && finalDownloadURL !== '#') {
       log.debug('[Step 2] Got direct download URL!');
       const title = await getVideoTitle(url);
-      return { downloadUrl: downloadURL, title, format };
+      return { downloadUrl: finalDownloadURL, title, format };
     }
     
+    // STEP 3: Polling (wajib sampai progress selesai)
     if (progressURL) {
       log.debug('[Step 3] Starting polling...');
       let polls = 0;
@@ -224,11 +227,13 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
           
           log.debug(`[Step 3] Poll ${polls}: progress=${progressData.progress}, error=${progressData.error}`);
           
-          // Cek apakah sukses (progress >= 3 seperti di web)
-          if (progressData.progress >= 3 && downloadURL && downloadURL !== '#') {
-            log.debug('[Step 3] Download ready!');
-            const title = await getVideoTitle(url);
-            return { downloadUrl: downloadURL, title, format };
+          // Cek apakah progress sudah mencapai 3 atau lebih (indikasi selesai)
+          if (progressData.progress >= 3) {
+            if (progressData.downloadURL && progressData.downloadURL !== '#') {
+              finalDownloadURL = progressData.downloadURL;
+              log.debug('[Step 3] Download ready from polling!');
+              break;
+            }
           }
           
           // Cek error
@@ -238,10 +243,9 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
           
           // Jika progress sudah 100%
           if (progressData.progress === 100) {
-            log.debug('[Step 3] Progress 100%, download should be ready');
-            if (downloadURL && downloadURL !== '#') {
-              const title = await getVideoTitle(url);
-              return { downloadUrl: downloadURL, title, format };
+            if (finalDownloadURL && finalDownloadURL !== '#') {
+              log.debug('[Step 3] Progress 100%, download ready');
+              break;
             }
           }
           
@@ -249,10 +253,9 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
           log.debug(`[Step 3] Poll error: ${err.message}`);
           
           // Jika error 404 tapi ada downloadURL, coba gunakan itu
-          if (err.response?.status === 404 && downloadURL && downloadURL !== '#') {
-            log.debug('[Step 3] Fallback to download URL');
-            const title = await getVideoTitle(url);
-            return { downloadUrl: downloadURL, title, format };
+          if (err.response?.status === 404 && finalDownloadURL && finalDownloadURL !== '#') {
+            log.debug('[Step 3] Fallback to existing download URL');
+            break;
           }
           
           // Lanjutkan polling jika masih ada kesempatan
@@ -262,7 +265,12 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
         }
       }
       
-      throw new Error('[Polling] Timeout - konversi terlalu lama');
+      if (!finalDownloadURL || finalDownloadURL === '#') {
+        throw new Error('[Polling] Failed to get download URL');
+      }
+      
+      const title = await getVideoTitle(url);
+      return { downloadUrl: finalDownloadURL, title, format };
     }
     
     throw new Error('[Convert] No valid response received');
@@ -282,7 +290,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0, sessionUA = null) {
       const backoffDelay = 2000 + Math.random() * 3000;
       log.info(`[Retry] Attempt ${retryCount + 2}/3 after ${Math.round(backoffDelay)}ms`);
       await delay(backoffDelay);
-      return ytmp(url, format, retryCount + 1, sessionUA);
+      return ytmp(url, format, retryCount + 1);
     }
     
     throw err;
@@ -298,7 +306,7 @@ async function checkApiStatus() {
   for (const api of apis) {
     try {
       const start = Date.now();
-      const res = await axios.get(api.url, { params: api.params, timeout: 8000, headers: { 'User-Agent': getUA() } });
+      const res = await axios.get(api.url, { params: api.params, timeout: 8000, headers: { 'User-Agent': STATIC_UA } });
       results.push({ name: api.name, status: 'online', responseTime: `${Date.now() - start}ms`, statusCode: res.status });
     } catch (err) {
       results.push({ name: api.name, status: 'offline', error: err.message, statusCode: err.response?.status || 'N/A' });
@@ -330,7 +338,7 @@ Kirimkan link YouTube, lalu pilih format:
 1. Kirim link YouTube
 2. Pilih format MP3 atau MP4
 3. Tunggu proses konversi
-4. *SEGERA klik tombol download* (link hanya bertahan 30-60 detik!)
+4. *SEGERA klik atau copy link* (link hanya bertahan 30-60 detik!)
 
 ━━━━━━━━━━━━━━━━━━━━
 👤 *Owner Bot:* Abiq Nurmagedov
@@ -338,8 +346,8 @@ Kirimkan link YouTube, lalu pilih format:
 
 ⚠️ *PENTING:* 
 • Link download cepat EXPIRED (30-60 detik)
-• SEGERA klik tombol download setelah muncul
-• Jangan share link ke orang lain
+• SEGERA download setelah muncul
+• Jika error, gunakan tombol "Download Lagi"
 ━━━━━━━━━━━━━━━━━━━━
 
 Kirim link YouTube sekarang! 🚀`;
@@ -484,8 +492,6 @@ async function processFormat(ctx, format) {
   await setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
   
   try {
-    const sessionUA = getUA();
-    
     await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
     
     await ctx.editMessageText(`🔍 Menganalisa link...`); 
@@ -511,7 +517,7 @@ async function processFormat(ctx, format) {
     
     await ctx.telegram.sendChatAction(ctx.chat.id, 'upload_document');
     
-    const result = await ytmp(url, format, 0, sessionUA);
+    const result = await ytmp(url, format);
     
     if (!result || !result.downloadUrl) throw new Error('[Process] Gagal mendapatkan link download');
     
@@ -519,49 +525,50 @@ async function processFormat(ctx, format) {
     
     const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
     const emoji = format === 'mp3' ? '🎵' : '🎬';
+    const escapedTitle = escapeMarkdownV2(title);
+    const escapedUrl = escapeMarkdownV2(result.downloadUrl);
     
+    // Gunakan MarkdownV2 untuk format yang lebih baik
     const successMessage = `
-${emoji} *Konversi Berhasil!*
+${emoji} *Konversi Berhasil\\!*
 
-📝 *Judul:* ${title}
+📝 *Judul:* ${escapedTitle}
 🎚️ *Format:* ${format.toUpperCase()}
 
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ *PERINGATAN PENTING!*
+🔗 *KLIK LINK DI BAWAH UNTUK DOWNLOAD:*
+${escapedUrl}
 ━━━━━━━━━━━━━━━━━━━━
 
-🔴 *Link hanya bertahan 30-60 DETIK!*
-✅ *SEGERA klik tombol download di bawah!*
-❌ *Jangan di-share ke orang lain!*
-🔄 *Jika expired, gunakan tombol "Download Lagi"*
-
-━━━━━━━━━━━━━━━━━━━━
-⬇️ *Klik tombol di bawah untuk download*`;
+⚠️ *Tips:* 
+• Tekan lama link untuk copy
+• Buka di browser/download manager
+• Link cepat expired \\(30-60 detik\\)
+• Jika error, gunakan tombol "Download Lagi"`;
 
     const videoMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     const videoId = videoMatch ? videoMatch[1] : null;
     
+    // Kirim pesan dengan link teks (tanpa inline keyboard download)
     if (videoId) {
       await ctx.replyWithPhoto(
         `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
         {
           caption: successMessage,
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.url(`⚡ DOWNLOAD ${format.toUpperCase()} SEKARANG ⚡`, result.downloadUrl)],
-            [Markup.button.callback('🔄 Download Lagi (Jika Expired)', 'format_retry')]
-          ])
+          parse_mode: 'MarkdownV2'
         }
       );
     } else {
-      await ctx.reply(successMessage, {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.url(`⚡ DOWNLOAD ${format.toUpperCase()} SEKARANG ⚡`, result.downloadUrl)],
-          [Markup.button.callback('🔄 Download Lagi (Jika Expired)', 'format_retry')]
-        ])
-      });
+      await ctx.reply(successMessage, { parse_mode: 'MarkdownV2' });
     }
+    
+    // Kirim tombol retry terpisah (opsional)
+    await ctx.reply('🔄 *Ingin download ulang?* Klik tombol dibawah jika link expired:', {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Download Lagi', 'format_retry')]
+      ])
+    });
     
   } catch (err) {
     log.error(`[User ${userId}] Error: ${err.message}`);
