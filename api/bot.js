@@ -316,15 +316,15 @@ Kirimkan link YouTube, lalu pilih format:
 1. Kirim link YouTube
 2. Pilih format MP3 atau MP4
 3. Tunggu proses konversi
-4. *SEGERA klik tombol download* (link hanya bertahan 30-60 detik!)
+4. Audio akan langsung dikirim (MP3) atau dapatkan link download (MP4)
 
 ━━━━━━━━━━━━━━━━━━━━
 👤 *Owner Bot:* Abiq Nurmagedov
 📦 *GitHub:* github.com/abiqnurmagedov17
 
 ⚠️ *PENTING:* 
+• Untuk MP3, audio akan langsung dikirim ke chat
 • Link download cepat EXPIRED (30-60 detik)
-• SEGERA klik tombol download setelah muncul
 • Jangan share link ke orang lain
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -509,36 +509,54 @@ async function processFormat(ctx, format) {
     const filename = sanitizeFilename(title) + extension;
     const typeText = format === 'mp3' ? 'Audio' : 'Video';
     
-    // Format pesan "Konversi Berhasil" yang diperbarui
-    const successMessage = 
+    // Format caption untuk audio/video
+    const captionMessage = 
       `🎵 *Konversi Berhasil!*\n\n` +
       `📝 *Judul:* ${title}\n` +
       `📁 *File:* ${filename}\n` +
       `🎚️ *Format:* ${typeText}\n\n` +
-      `🔗 *Link Download:*\n` +
-      `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
       `⚠️ *PENTING - BACA!*\n` +
       `• Link bisa expired dalam hitungan menit\n` +
       `• Error "code: 2-1" = link sudah mati\n` +
-      `• Kirim ulang link untuk dapat link baru`;
+      `• Kirim ulang link untuk dapat link baru\n\n` +
+      `🔗 *Link Download:* [Klik di sini untuk download](${result.downloadUrl})`;
     
-    // Mengirim pesan hasil konversi
-    await ctx.reply(successMessage, { 
-      parse_mode: 'Markdown', 
-      disable_web_page_preview: false 
-    });
-    
-    // Mengirim file audio secara otomatis (jika format MP3)
+    // Untuk format MP3: kirim audio dengan caption
     if (format === 'mp3') {
       try {
         await ctx.replyWithAudio(result.downloadUrl, {
           title: title,
           filename: filename,
-          caption: `🎵 ${title}`
-        }).catch(e => log.debug("Gagal mengirim audio stream: " + e.message));
+          caption: captionMessage,
+          parse_mode: 'Markdown'
+        });
+        log.debug(`Audio sent successfully for user ${userId}`);
       } catch (audioErr) {
         log.debug(`Auto-stream audio failed: ${audioErr.message}`);
+        // Fallback: kirim pesan teks biasa jika audio gagal
+        await ctx.reply(captionMessage, { 
+          parse_mode: 'Markdown', 
+          disable_web_page_preview: false 
+        });
       }
+    } else {
+      // Untuk format MP4: kirim pesan teks biasa
+      const textMessage = 
+        `🎵 *Konversi Berhasil!*\n\n` +
+        `📝 *Judul:* ${title}\n` +
+        `📁 *File:* ${filename}\n` +
+        `🎚️ *Format:* ${typeText}\n\n` +
+        `🔗 *Link Download:*\n` +
+        `[Klik di sini untuk download](${result.downloadUrl})\n\n` +
+        `⚠️ *PENTING - BACA!*\n` +
+        `• Link bisa expired dalam hitungan menit\n` +
+        `• Error "code: 2-1" = link sudah mati\n` +
+        `• Kirim ulang link untuk dapat link baru`;
+      
+      await ctx.reply(textMessage, { 
+        parse_mode: 'Markdown', 
+        disable_web_page_preview: false 
+      });
     }
     
   } catch (err) {
