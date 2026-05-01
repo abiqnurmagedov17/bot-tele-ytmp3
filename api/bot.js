@@ -35,10 +35,10 @@ const log = {
   warn: (msg) => console.log(`[WARN] ${msg}`)
 };
 
-// Escape karakter khusus untuk MarkdownV2 - PERBAIKAN
+// Escape karakter khusus untuk MarkdownV2
 function escapeMarkdownV2(text) {
   if (!text) return '';
-  // Escape semua karakter khusus MarkdownV2: _ * [ ] ( ) ~ ` > # + - = | { } . !
+  // Escape semua karakter khusus MarkdownV2
   return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
 
@@ -117,12 +117,13 @@ function sanitizeFilename(name) {
   return clean || 'audio';
 }
 
-// Perbaiki fungsi getVideoTitle - gunakan ${videoId} bukan 0{videoId}
+// PERBAIKAN: Fungsi getVideoTitle - gunakan ${videoId} dengan benar
 async function getVideoTitle(url) {
   try {
     const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (!match) return `video_${Date.now()}`;
     const videoId = match[1];
+    // PERBAIKAN: Gunakan template literal yang benar dengan $, bukan 0
     const response = await axios.get(`https://noembed.com/embed?url=https://youtube.com/watch?v=${videoId}`, { timeout: 5000 });
     return response.data?.title || `video_${Date.now()}`;
   } catch (err) {
@@ -530,7 +531,8 @@ async function processFormat(ctx, format) {
     const escapedUrl = escapeMarkdownV2(result.downloadUrl);
     
     // Gunakan MarkdownV2 untuk format yang lebih baik
-    const successMessage = `${emoji} *Konversi Berhasil\\!*
+    const successMessage = `
+${emoji} *Konversi Berhasil\\!*
 
 📝 *Judul:* ${escapedTitle}
 🎚️ *Format:* ${format.toUpperCase()}
@@ -543,13 +545,13 @@ ${escapedUrl}
 ⚠️ *Tips:* 
 • Tekan lama link untuk copy
 • Buka di browser/download manager
-• Link cepat expired (30-60 detik)
-• Jika error, gunakan tombol \"Download Lagi\"`;
+• Link cepat expired \\(30-60 detik\\)
+• Jika error, gunakan tombol "Download Lagi"`;
 
     const videoMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     const videoId = videoMatch ? videoMatch[1] : null;
     
-    // Kirim pesan dengan link teks (tanpa inline keyboard download)
+    // PERBAIKAN: Gunakan ${videoId} yang benar, bukan 9${videoId}
     if (videoId) {
       await ctx.replyWithPhoto(
         `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
@@ -562,7 +564,7 @@ ${escapedUrl}
       await ctx.reply(successMessage, { parse_mode: 'MarkdownV2' });
     }
     
-    // Kirim tombol retry terpisah (opsional) - Gunakan Markdown biasa
+    // Kirim tombol retry terpisah
     await ctx.reply('🔄 *Ingin download ulang?* Klik tombol dibawah jika link expired:', {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
@@ -582,8 +584,6 @@ ${escapedUrl}
       errorMessage += 'Link download expired atau server sibuk.\nGunakan tombol "Download Lagi" atau kirim ulang link.';
     } else if (err.message.includes('Video tidak ditemukan')) {
       errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
-    } else if (err.message.includes('400')) {
-      errorMessage += 'Format pesan error. Silakan coba lagi dengan link yang sama.';
     } else {
       errorMessage += `Server mungkin sibuk. Coba lagi nanti.\n\nError: ${err.message.substring(0, 100)}`;
     }
