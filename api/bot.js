@@ -92,7 +92,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
       'Referer': 'https://id.ytmp3.mobi/v1/',
-      'Origin': 'https://id.ytmp3.mobi',
+      'Origin': 'https://id.ytmp3.mobi/v1',
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
@@ -125,7 +125,7 @@ async function ytmp(url, format = 'mp3', retryCount = 0) {
       while (polls < CONFIG.MAX_POLLS) {
         polls++;
         try {
-          const prog = await client.get(convert.data.progressURL, { headers: { 'Referer': 'https://id.ytmp3.mobi/v1/', 'Origin': 'https://id.ytmp3.mobi' } });
+          const prog = await client.get(convert.data.progressURL, { headers: { 'Referer': 'https://id.ytmp3.mobi/v1/', 'Origin': 'https://id.ytmp3.mobi/v1' } });
           const progressData = prog.data;
           if (progressData.downloadURL && progressData.downloadURL !== '#') {
             log.debug('[Step 3] Got download URL from polling! Giving it to user untouched.');
