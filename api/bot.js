@@ -279,20 +279,82 @@ async function processFormat(ctx, format) {
   const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
   setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
   try {
+    // Kirim typing action
+    await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
+    
     await ctx.editMessageText(`🔍 Menganalisa link...`); await delay(500);
     const loadingMsg = ctx.callbackQuery.message;
-    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, `⚙️ Menghubungkan ke server...`); await delay(500);
-    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, `🔄 Mengkonversi ke ${formatName}...`);
+    
+    // Progress bar statis 25%
+    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, 
+      `⏳ *Proses Konversi*\n` +
+      `[▓▓▓░░░░░░░] 25%\n\n` +
+      `📡 Menghubungkan ke server...`, { parse_mode: 'Markdown' });
+    await delay(500);
+    
+    // Progress bar statis 50%
+    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, 
+      `⏳ *Proses Konversi*\n` +
+      `[▓▓▓▓▓░░░░░] 50%\n\n` +
+      `🔄 Meracik ${formatName}...`, { parse_mode: 'Markdown' });
+    await delay(500);
+    
+    // Progress bar statis 75%
+    await ctx.telegram.editMessageText(ctx.chat.id, loadingMsg.message_id, null, 
+      `⏳ *Proses Konversi*\n` +
+      `[▓▓▓▓▓▓▓░░░] 75%\n\n` +
+      `⚙️ Memproses ${formatName}...`, { parse_mode: 'Markdown' });
+    
+    // Upload document action
+    await ctx.telegram.sendChatAction(ctx.chat.id, 'upload_document');
+    
     const result = await ytmp(url, format);
     if (!result || !result.downloadUrl) throw new Error('[Process] Gagal mendapatkan link download');
+    
     await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
+    
     const title = result.title || (format === 'mp3' ? 'Audio' : 'Video');
     const extension = format === 'mp3' ? '.mp3' : '.mp4';
     const filename = sanitizeFilename(title) + extension;
     const emoji = format === 'mp3' ? '🎵' : '🎬';
-    const typeText = format === 'mp3' ? 'Audio' : 'Video';
-    const successMessage = `${emoji} *Konversi Berhasil!*\n\n📝 *Judul:* ${title}\n📁 *File:* ${filename}\n🎚️ *Format:* ${typeText}\n\n🔗 *Link Download:*\n\`${result.downloadUrl}\`\n\n⚠️ *PENTING!*\n• Link hanya sekali pakai & cepat expired!\n• JANGAN dibuka dulu kalau belum siap download!\n• Copy link-nya, jangan diklik langsung dari chat!\n• Kalau error, link sudah mati. Kirim ulang URL.`;
-    await ctx.reply(successMessage, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    const typeText = format === 'mp3' ? 'Audio High Quality' : 'Video HD';
+    
+    // Tampilan pesan yang lebih cantik
+    const successMessage = `
+✨ *Ready to Download!*
+
+${emoji} *Judul:* ${title}
+🎚️ *Format:* ${format.toUpperCase()}
+🚀 *Status:* Berhasil dikonversi
+
+_Klik tombol di bawah untuk mengunduh file. Link akan kadaluarsa dalam beberapa menit._`;
+
+    // Dapatkan videoId untuk thumbnail
+    const videoMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    const videoId = videoMatch ? videoMatch[1] : null;
+    
+    if (videoId) {
+      await ctx.replyWithPhoto(
+        `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+        {
+          caption: successMessage,
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.url(`📥 Download ${format.toUpperCase()}`, result.downloadUrl)],
+            [Markup.button.callback('🔄 Download Lagi', 'format_retry')]
+          ])
+        }
+      );
+    } else {
+      // Fallback jika tidak bisa dapat thumbnail
+      await ctx.reply(successMessage, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.url(`📥 Download ${format.toUpperCase()}`, result.downloadUrl)],
+          [Markup.button.callback('🔄 Download Lagi', 'format_retry')]
+        ])
+      });
+    }
   } catch (err) {
     log.error(`[User ${userId}] Error: ${err.message}`);
     let errorMessage = '❌ *Gagal memproses link*\n\n';
@@ -303,6 +365,27 @@ async function processFormat(ctx, format) {
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
   } finally { deleteUserState(userId); }
 }
+
+// Tambahkan handler untuk tombol retry
+bot.action('format_retry', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  if (!state || !state.url) {
+    await ctx.answerCbQuery('⚠️ Sesi berakhir, kirim link YouTube lagi');
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    return;
+  }
+  await ctx.answerCbQuery('🔄 Mengulang proses...');
+  setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
+  await ctx.editMessageText('🔄 *Pilih format download ulang:*', {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'), 
+       Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')],
+      [Markup.button.callback('❌ Batal', 'format_cancel')]
+    ])
+  });
+});
 
 bot.catch((err, ctx) => { log.error(`[Bot] Error: ${err}`); ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi nanti.').catch(() => {}); });
 
