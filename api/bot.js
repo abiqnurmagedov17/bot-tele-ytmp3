@@ -35,6 +35,13 @@ const log = {
   warn: (msg) => console.log(`[WARN] ${msg}`)
 };
 
+// Escape karakter khusus untuk MarkdownV2 - PERBAIKAN
+function escapeMarkdownV2(text) {
+  if (!text) return '';
+  // Escape semua karakter khusus MarkdownV2: _ * [ ] ( ) ~ ` > # + - = | { } . !
+  return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+}
+
 // Fungsi helper untuk cek rate limit
 async function isRateLimited(userId) {
   if (!redis) return false;
@@ -108,12 +115,6 @@ async function deleteUserState(userId) {
 function sanitizeFilename(name) {
   const clean = name.replace(/[^\w\s.-]/gi, '').trim().substring(0, 100);
   return clean || 'audio';
-}
-
-// Escape karakter khusus untuk MarkdownV2
-function escapeMarkdownV2(text) {
-  if (!text) return '';
-  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
 }
 
 // Perbaiki fungsi getVideoTitle - gunakan ${videoId} bukan 0{videoId}
@@ -529,8 +530,7 @@ async function processFormat(ctx, format) {
     const escapedUrl = escapeMarkdownV2(result.downloadUrl);
     
     // Gunakan MarkdownV2 untuk format yang lebih baik
-    const successMessage = `
-${emoji} *Konversi Berhasil\\!*
+    const successMessage = `${emoji} *Konversi Berhasil\\!*
 
 📝 *Judul:* ${escapedTitle}
 🎚️ *Format:* ${format.toUpperCase()}
@@ -543,8 +543,8 @@ ${escapedUrl}
 ⚠️ *Tips:* 
 • Tekan lama link untuk copy
 • Buka di browser/download manager
-• Link cepat expired \\(30-60 detik\\)
-• Jika error, gunakan tombol "Download Lagi"`;
+• Link cepat expired (30-60 detik)
+• Jika error, gunakan tombol \"Download Lagi\"`;
 
     const videoMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     const videoId = videoMatch ? videoMatch[1] : null;
@@ -562,7 +562,7 @@ ${escapedUrl}
       await ctx.reply(successMessage, { parse_mode: 'MarkdownV2' });
     }
     
-    // Kirim tombol retry terpisah (opsional)
+    // Kirim tombol retry terpisah (opsional) - Gunakan Markdown biasa
     await ctx.reply('🔄 *Ingin download ulang?* Klik tombol dibawah jika link expired:', {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
@@ -582,6 +582,8 @@ ${escapedUrl}
       errorMessage += 'Link download expired atau server sibuk.\nGunakan tombol "Download Lagi" atau kirim ulang link.';
     } else if (err.message.includes('Video tidak ditemukan')) {
       errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
+    } else if (err.message.includes('400')) {
+      errorMessage += 'Format pesan error. Silakan coba lagi dengan link yang sama.';
     } else {
       errorMessage += `Server mungkin sibuk. Coba lagi nanti.\n\nError: ${err.message.substring(0, 100)}`;
     }
