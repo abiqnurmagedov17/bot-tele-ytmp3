@@ -2,6 +2,13 @@ const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
+const { Redis } = require('@upstash/redis');
+
+// Inisialisasi Redis
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 const CONFIG = {
   TIMEOUT: 30000,
@@ -16,12 +23,8 @@ const CONFIG = {
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
   ],
   RATE_LIMIT_DELAY: 500,
-  STATE_TTL: 2 * 60 * 1000
+  STATE_TTL: 2 * 60 // 2 menit dalam detik
 };
-
-const userStates = new Map();
-const stateTimeouts = new Map();
-const rateLimits = new Map();
 
 const log = {
   info: (msg) => console.log(`[INFO] ${msg}`),
@@ -34,25 +37,26 @@ function getUA() {
   return CONFIG.USER_AGENTS[Math.floor(Math.random() * CONFIG.USER_AGENTS.length)];
 }
 
-function setUserState(userId, state) {
-  if (stateTimeouts.has(userId)) {
-    clearTimeout(stateTimeouts.get(userId));
-  }
-  userStates.set(userId, state);
-  const timeout = setTimeout(() => {
-    log.debug(`Auto-cleanup state for user ${userId}`);
-    userStates.delete(userId);
-    stateTimeouts.delete(userId);
-  }, CONFIG.STATE_TTL);
-  stateTimeouts.set(userId, timeout);
+// Fungsi untuk menyimpan state user ke Redis
+async function setUserState(userId, state) {
+  const key = `user:state:${userId}`;
+  await redis.setex(key, CONFIG.STATE_TTL, JSON.stringify(state));
+  log.debug(`State saved for user ${userId}`);
 }
 
-function deleteUserState(userId) {
-  if (stateTimeouts.has(userId)) {
-    clearTimeout(stateTimeouts.get(userId));
-    stateTimeouts.delete(userId);
-  }
-  userStates.delete(userId);
+// Fungsi untuk mengambil state user dari Redis
+async function getUserState(userId) {
+  const key = `user:state:${userId}`;
+  const data = await redis.get(key);
+  if (!data) return null;
+  return JSON.parse(data);
+}
+
+// Fungsi untuk menghapus state user dari Redis
+async function deleteUserState(userId) {
+  const key = `user:state:${userId}`;
+  await redis.del(key);
+  log.debug(`State deleted for user ${userId}`);
 }
 
 function sanitizeFilename(name) {
@@ -181,22 +185,41 @@ async function checkApiStatus() {
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// Middleware untuk rate limit dengan Redis
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
-  const start = Date.now();
-  if (userId) {
-    const now = Date.now();
-    const limit = rateLimits.get(userId) || { count: 0, resetAt: now + 60000 };
-    if (now > limit.resetAt) rateLimits.set(userId, { count: 1, resetAt: now + 60000 });
-    else limit.count++;
+  if (!userId) return next();
+
+  const key = `ratelimit:${userId}`;
+  const limit = 10; // Maksimal 10 request
+  const window = 60; // Dalam 60 detik
+
+  try {
+    // Gunakan incr (increment) di Redis
+    const currentUsage = await redis.incr(key);
+
+    if (currentUsage === 1) {
+      // Jika ini request pertama, set kadaluarsa 1 menit
+      await redis.expire(key, window);
+    }
+
+    if (currentUsage > limit) {
+      const ttl = await redis.ttl(key);
+      return ctx.reply(`🚦 *Rate Limit Tercapai!*\nMohon tunggu ${ttl} detik lagi.`, { parse_mode: 'Markdown' });
+    }
+  } catch (err) {
+    console.error('Redis Error:', err);
+    // Jika Redis error, tetap jalankan bot (fallback)
   }
+
+  const start = Date.now();
   await next();
   const ms = Date.now() - start;
   log.info(`${ctx.from?.first_name || 'User'}: ${ctx.message?.text || ctx.callbackQuery?.data || 'Interaction'} (${ms}ms)`);
   await delay(CONFIG.RATE_LIMIT_DELAY);
 });
 
-bot.start((ctx) => {
+bot.start(async (ctx) => {
   const welcomeMessage = `🎬 *YouTube Downloader Bot* 🎬\n\nHalo ${ctx.from.first_name || 'Kak'}!\n\nKirimkan link YouTube, lalu pilih format:\n• *MP3* - Audio only\n• *MP4* - Video with audio\n\n*Cara penggunaan:*\n1. Kirim link YouTube\n2. Pilih format MP3 atau MP4\n3. Tunggu proses konversi\n4. Dapatkan link download\n\n━━━━━━━━━━━━━━━━━━━━\n👤 *Owner Bot:* Abiq Nurmagedov\n📦 *GitHub:* github.com/abiqnurmagedov17\n\n⚠️ *Note:*\nBot ini menggunakan API pihak ketiga hasil scraping dan bisa mati sewaktu-waktu.\nGunakan dengan bijak!\n━━━━━━━━━━━━━━━━━━━━\n\nKirim link YouTube sekarang! 🚀`;
   ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
 });
@@ -205,9 +228,9 @@ bot.help((ctx) => {
   ctx.reply('📖 *Bantuan*\n\nKirimkan link YouTube, lalu pilih format.\n\n*Format:*\n• MP3 - Audio (musik, podcast)\n• MP4 - Video (tanpa watermark)\n\n*Contoh link:*\n• https://youtube.com/watch?v=xxxxx\n• https://youtu.be/xxxxx\n• https://youtube.com/shorts/xxxxx\n\n*Perintah:*\n/start - Mulai bot\n/help - Bantuan\n/status - Cek status proses\n/ping - Cek status API\n/health - Cek status bot\n/limit - Cek kuota download\n/retry - Generate link baru', { parse_mode: 'Markdown' });
 });
 
-bot.command('status', (ctx) => {
+bot.command('status', async (ctx) => {
   const userId = ctx.from.id;
-  const state = userStates.get(userId);
+  const state = await getUserState(userId);
   if (state) ctx.reply(`⏳ Sedang memproses: ${state.url} (${state.format || 'mp3'})`);
   else ctx.reply('✅ Tidak ada proses yang sedang berjalan');
 });
@@ -231,53 +254,71 @@ bot.command('ping', async (ctx) => {
 
 bot.command('health', async (ctx) => {
   const mem = process.memoryUsage();
-  const health = { status: 'ok', uptime: `${Math.floor(process.uptime())}s`, memory: { rss: `${Math.round(mem.rss / 1024 / 1024)}MB`, heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)}MB` }, activeUsers: userStates.size, timestamp: new Date().toISOString() };
+  const health = { status: 'ok', uptime: `${Math.floor(process.uptime())}s`, memory: { rss: `${Math.round(mem.rss / 1024 / 1024)}MB`, heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)}MB` }, timestamp: new Date().toISOString() };
   ctx.reply(`📊 *Health Check*\n\`\`\`json\n${JSON.stringify(health, null, 2)}\`\`\``, { parse_mode: 'Markdown' });
 });
 
 bot.command('limit', async (ctx) => {
   const userId = ctx.from.id;
   const userName = ctx.from.username || ctx.from.first_name || 'User';
-  const now = Date.now();
-  const limit = rateLimits.get(userId) || { count: 0, resetAt: now + 60000 };
-  const remaining = Math.max(0, 10 - limit.count);
-  const resetIn = Math.ceil((limit.resetAt - now) / 1000);
-  let text = `📊 *Limit Usage*\n\n👤 *User:* @${userName}\n🔄 *Used:* ${limit.count}/10 requests\n✅ *Remaining:* ${remaining}\n⏱️ *Reset in:* ${resetIn}s\n\n`;
-  text += remaining > 0 ? `✨ *Status:* ACTIVE` : `🚦 *Status:* RATE LIMITED\n⏳ Tunggu ${resetIn}s`;
-  ctx.reply(text, { parse_mode: 'Markdown' });
+  const key = `ratelimit:${userId}`;
+  
+  try {
+    const currentUsage = await redis.get(key);
+    const usage = currentUsage ? parseInt(currentUsage) : 0;
+    const ttl = await redis.ttl(key);
+    const remaining = Math.max(0, 10 - usage);
+    
+    let text = `📊 *Limit Usage*\n\n👤 *User:* @${userName}\n🔄 *Used:* ${usage}/10 requests\n✅ *Remaining:* ${remaining}\n⏱️ *Reset in:* ${ttl > 0 ? ttl : 0}s\n\n`;
+    text += remaining > 0 ? `✨ *Status:* ACTIVE` : `🚦 *Status:* RATE LIMITED\n⏳ Tunggu ${ttl}s`;
+    ctx.reply(text, { parse_mode: 'Markdown' });
+  } catch (err) {
+    ctx.reply('❌ Gagal mengambil data limit', { parse_mode: 'Markdown' });
+  }
 });
 
 bot.command('retry', async (ctx) => {
   const userId = ctx.from.id;
-  const state = userStates.get(userId);
+  const state = await getUserState(userId);
   if (!state || !state.url) return ctx.reply('❌ Tidak ada proses sebelumnya. Kirim link YouTube dulu.');
-  setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
+  await setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
   ctx.reply(`🔄 *Link di-refresh!* Pilih format:\n\n\`${state.url}\``, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🎵 MP3', 'format_mp3'), Markup.button.callback('🎬 MP4', 'format_mp4')], [Markup.button.callback('❌ Batal', 'format_cancel')]]) });
 });
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const messageText = ctx.message.text.trim();
-  if (userStates.has(userId)) return ctx.reply('⏳ Mohon tunggu, proses sebelumnya masih berjalan...');
+  const existingState = await getUserState(userId);
+  if (existingState) return ctx.reply('⏳ Mohon tunggu, proses sebelumnya masih berjalan...');
+  
   const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|shorts\/)?([a-zA-Z0-9_-]{11})/;
   const match = messageText.match(youtubeRegex);
   if (!match) return ctx.reply('❌ Mohon kirim link YouTube yang valid.\n\nContoh: https://youtube.com/watch?v=xxxxx');
+  
   const url = messageText;
-  setUserState(userId, { url, step: 'choose_format', startTime: Date.now() });
+  await setUserState(userId, { url, step: 'choose_format', startTime: Date.now() });
   await ctx.reply('🎬 *Pilih format download:*', Markup.inlineKeyboard([[Markup.button.callback('🎵 MP3 (Audio)', 'format_mp3'), Markup.button.callback('🎬 MP4 (Video)', 'format_mp4')], [Markup.button.callback('❌ Batal', 'format_cancel')]]));
 });
 
 bot.action('format_mp3', async (ctx) => { await processFormat(ctx, 'mp3'); });
 bot.action('format_mp4', async (ctx) => { await processFormat(ctx, 'mp4'); });
-bot.action('format_cancel', async (ctx) => { const userId = ctx.from.id; deleteUserState(userId); await ctx.editMessageText('❌ Proses dibatalkan.'); });
+bot.action('format_cancel', async (ctx) => { 
+  const userId = ctx.from.id; 
+  await deleteUserState(userId); 
+  await ctx.editMessageText('❌ Proses dibatalkan.'); 
+});
 
 async function processFormat(ctx, format) {
   const userId = ctx.from.id;
-  const state = userStates.get(userId);
-  if (!state || state.step !== 'choose_format') { await ctx.editMessageText('⏰ Sesi telah berakhir. Kirim link YouTube lagi.'); deleteUserState(userId); return; }
+  const state = await getUserState(userId);
+  if (!state || state.step !== 'choose_format') { 
+    await ctx.editMessageText('⏰ Sesi telah berakhir. Kirim link YouTube lagi.'); 
+    await deleteUserState(userId); 
+    return; 
+  }
   const url = state.url;
   const formatName = format === 'mp3' ? 'MP3 (Audio)' : 'MP4 (Video)';
-  setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
+  await setUserState(userId, { url, format, step: 'processing', startTime: Date.now() });
   try {
     // Kirim typing action
     await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
@@ -363,20 +404,22 @@ _Klik tombol di bawah untuk mengunduh file. Link akan kadaluarsa dalam beberapa 
     else if (err.message.includes('Video tidak ditemukan')) errorMessage += 'Video tidak ditemukan. Periksa kembali linknya.';
     else errorMessage += `Server mungkin sibuk. Coba lagi nanti.`;
     await ctx.reply(errorMessage, { parse_mode: 'Markdown' });
-  } finally { deleteUserState(userId); }
+  } finally { 
+    await deleteUserState(userId); 
+  }
 }
 
 // Tambahkan handler untuk tombol retry
 bot.action('format_retry', async (ctx) => {
   const userId = ctx.from.id;
-  const state = userStates.get(userId);
+  const state = await getUserState(userId);
   if (!state || !state.url) {
     await ctx.answerCbQuery('⚠️ Sesi berakhir, kirim link YouTube lagi');
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     return;
   }
   await ctx.answerCbQuery('🔄 Mengulang proses...');
-  setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
+  await setUserState(userId, { url: state.url, step: 'choose_format', startTime: Date.now() });
   await ctx.editMessageText('🔄 *Pilih format download ulang:*', {
     parse_mode: 'Markdown',
     ...Markup.inlineKeyboard([
